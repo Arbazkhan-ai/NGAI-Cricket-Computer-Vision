@@ -1,3 +1,4 @@
+<<<<<<< HEAD
 # React + TypeScript + Vite
 
 This template provides a minimal setup to get React working in Vite with HMR and some ESLint rules.
@@ -71,3 +72,7 @@ export default defineConfig([
   },
 ])
 ```
+=======
+# NGAI-Cricket-Computer-Vision
+🏏 NGAI Cricket Computer Vision is an AI-powered system that analyzes cricket matches using Python, OpenCV, and YOLO for player and ball tracking, action detection, and performance analytics. Built with React, Node.js, and JavaScript for an interactive real-time dashboard and insights.
+>>>>>>> 5e99ec537305dada4c017a4af004595c841c78d0
