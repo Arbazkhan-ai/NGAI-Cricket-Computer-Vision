@@ -1,4 +1,5 @@
 const API_URL = 'http://localhost:3000/api';
+const FASTAPI_URL = 'http://localhost:8000';
 
 export interface DetectionResult {
     type: string;
@@ -7,6 +8,7 @@ export interface DetectionResult {
     conf: number;
     xyxy?: number[];
     keypoints?: number[][];
+    model?: string;
 }
 
 export interface AnalysisResponse {
@@ -15,11 +17,12 @@ export interface AnalysisResponse {
     db_id: number;
 }
 
-export const analyzeImage = async (file: File): Promise<AnalysisResponse> => {
+export const analyzeImage = async (file: File, mode: 'mediapipe' | 'yolo' = 'mediapipe'): Promise<AnalysisResponse> => {
     const formData = new FormData();
-    formData.append('image', file);
+    formData.append('image', file); // Changed 'file' to 'image' to match server.js multer
+    formData.append('mode', mode);
 
-    const response = await fetch(`${API_URL}/analyze`, {
+    const response = await fetch(`${API_URL}/analyze`, { // Changed from FASTAPI_URL to API_URL
         method: 'POST',
         body: formData,
     });

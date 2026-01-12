@@ -43,60 +43,110 @@ const storage = multer.diskStorage({
 
 const upload = multer({ storage: storage });
 
+// ------------------------------------------------------
+// PERSISTENT JAVASCRIPT/PYTHON BRIDGE
+// ------------------------------------------------------
+let pythonProcess = null;
+const requestQueue = []; // Array of {resolve, reject} objects corresponding to sent requests
+
+// Function to start the persistent Python process
+function startPythonProcess() {
+    const pythonScriptPath = path.join(__dirname, 'inference.py');
+    console.log('Starting Python inference service...');
+    pythonProcess = spawn('python', [pythonScriptPath]);
+
+    let buffer = '';
+
+    // Handle Data from Python (One JSON line per request)
+    pythonProcess.stdout.on('data', (data) => {
+        buffer += data.toString();
+
+        // Process line by line
+        let boundary = buffer.indexOf('\n');
+        while (boundary !== -1) {
+            const line = buffer.substring(0, boundary);
+            buffer = buffer.substring(boundary + 1);
+
+            if (line.trim()) {
+                const handler = requestQueue.shift();
+                if (handler) {
+                    try {
+                        const result = JSON.parse(line);
+                        handler.resolve(result);
+                    } catch (e) {
+                        console.error("JSON Parse Error on line:", line);
+                        handler.reject(new Error("Failed to parse backend response"));
+                    }
+                }
+            }
+            boundary = buffer.indexOf('\n');
+        }
+    });
+
+    pythonProcess.stderr.on('data', (data) => {
+        console.error(`PYTHON ERR: ${data}`);
+    });
+
+    pythonProcess.on('close', (code) => {
+        console.log(`Python process exited with code ${code}. Restarting in 1s...`);
+        pythonProcess = null;
+        setTimeout(startPythonProcess, 1000); // Auto-restart
+    });
+}
+
+// Start immediately
+startPythonProcess();
+
+
 // Endpoint to handle image upload and analysis
-app.post('/api/analyze', upload.single('image'), (req, res) => {
+app.post('/api/analyze', upload.single('image'), async (req, res) => {
     if (!req.file) {
         return res.status(400).json({ error: 'No image file provided' });
     }
 
     const imagePath = req.file.path;
-    const pythonScriptPath = path.join(__dirname, 'inference.py');
+    const mode = req.body.mode || 'yolo';
 
-    // Spawn Python process to run inference
-    const pythonProcess = spawn('python', [pythonScriptPath, imagePath]);
+    // Ensure process is running
+    if (!pythonProcess) {
+        // Wait a bit or try to restart? It should be auto-restarting.
+        return res.status(503).json({ error: 'Inference service is starting, please try again.' });
+    }
 
-    let dataString = '';
-    let errorString = '';
+    try {
+        // Create a promise that resolves when the Python script responds
+        const result = await new Promise((resolve, reject) => {
+            // Add to queue
+            requestQueue.push({ resolve, reject });
 
-    pythonProcess.stdout.on('data', (data) => {
-        dataString += data.toString();
-    });
+            // Send request to Python (JSON line)
+            const payload = JSON.stringify({ image_path: imagePath, mode: mode }) + '\n';
+            pythonProcess.stdin.write(payload);
+        });
 
-    pythonProcess.stderr.on('data', (data) => {
-        errorString += data.toString();
-    });
-
-    pythonProcess.on('close', (code) => {
-        if (code !== 0) {
-            console.error(`Python script exited with code ${code}`);
-            console.error(`Error: ${errorString}`);
-            return res.status(500).json({ error: 'Failed to process image', details: errorString });
+        // Error in result?
+        if (result.error) {
+            console.error("Inference Error:", result);
+            return res.status(500).json(result); // Pass error to frontend
         }
 
-        try {
-            const result = JSON.parse(dataString);
+        // Save to Database (Async, don't block response)
+        const stmt = db.prepare("INSERT INTO detections (image_path, results) VALUES (?, ?)");
+        stmt.run(imagePath, JSON.stringify(result), function (err) {
+            if (err) console.error("DB Error:", err.message);
+        });
+        stmt.finalize();
 
-            // Save to Database
-            const stmt = db.prepare("INSERT INTO detections (image_path, results) VALUES (?, ?)");
-            stmt.run(imagePath, JSON.stringify(result), function (err) {
-                if (err) {
-                    console.error(err.message);
-                    // We still return the result even if DB save fails, but log it
-                }
-                res.json({
-                    message: 'Analysis complete',
-                    data: result,
-                    db_id: this ? this.lastID : null
-                });
-            });
-            stmt.finalize();
+        res.json({
+            message: 'Analysis complete',
+            data: result,
+            db_id: 0 // Placeholder or get actual ID if needed
+        });
 
-        } catch (e) {
-            console.error('Error parsing JSON from Python script:', e);
-            console.log('Raw output:', dataString);
-            res.status(500).json({ error: 'Invalid response from model' });
-        }
-    });
+    } catch (e) {
+        console.error("Server Error:", e);
+        res.status(500).json({ error: 'Failed to process request', details: e.message });
+    }
 });
 
 app.get('/api/history', (req, res) => {

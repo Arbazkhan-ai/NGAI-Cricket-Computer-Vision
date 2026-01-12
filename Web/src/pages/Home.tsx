@@ -129,7 +129,7 @@ export default function Home() {
                     const file = new File([blob], "capture.jpg", { type: "image/jpeg" });
 
                     try {
-                        const response = await analyzeImage(file);
+                        const response = await analyzeImage(file, 'mediapipe');
 
                         // Clear previous drawings
                         ctx.clearRect(0, 0, canvas.width, canvas.height);

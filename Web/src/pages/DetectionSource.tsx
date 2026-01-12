@@ -95,7 +95,7 @@ export default function DetectionSource() {
         if (selectedMethod === 'image') {
             setIsAnalyzing(true);
             try {
-                const response = await analyzeImage(file);
+                const response = await analyzeImage(file, 'yolo');
                 if (response.data) {
                     setAnalysisResult(response.data.map(mapDetection));
                 }
@@ -145,7 +145,7 @@ export default function DetectionSource() {
             if (!blob) return;
             const file = new File([blob], "frame.jpg", { type: "image/jpeg" });
             try {
-                const response = await analyzeImage(file);
+                const response = await analyzeImage(file, 'yolo');
                 if (response.data && response.data.length > 0) {
                     const mapped = response.data.map(mapDetection);
                     setAnalysisResult(mapped);
