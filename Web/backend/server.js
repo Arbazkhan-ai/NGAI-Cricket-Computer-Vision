@@ -43,6 +43,20 @@ const storage = multer.diskStorage({
 
 const upload = multer({ storage: storage });
 
+// Define Python Path (hardcoded for this environment to ensure venv usage)
+const PYTHON_PATH = path.join(__dirname, '..', '..', '..', 'venv', 'Scripts', 'python.exe');
+// Note: We need to go up 3 levels from backend/server.js? 
+// D:\Full Webdevelopment\Web\backend
+// .. -> Web
+// .. -> Full Webdevelopment
+// venv is in Full Webdevelopment. So up 2 levels.
+// Let's verify path join. 
+
+// Actually, let's just use the absolute path to be 100% sure and avoid relative path confusion in the fix.
+const PYTHON_EXECUTABLE = process.platform === 'win32'
+    ? 'd:\\Full Webdevelopment\\venv\\Scripts\\python.exe'
+    : 'python3';
+
 // ------------------------------------------------------
 // PERSISTENT JAVASCRIPT/PYTHON BRIDGE
 // ------------------------------------------------------
@@ -53,8 +67,16 @@ const requestQueue = []; // Array of {resolve, reject} objects corresponding to 
 // Function to start the persistent Python process
 function startPythonProcess() {
     const pythonScriptPath = path.join(__dirname, 'inference.py');
-    console.log('Starting Python inference service...');
-    pythonProcess = spawn('python', [pythonScriptPath]);
+    console.log(`Starting Python inference service using: ${PYTHON_EXECUTABLE}`);
+
+    // Check if venv python exists, else fall back to 'python'
+    let exe = PYTHON_EXECUTABLE;
+    if (!fs.existsSync(exe)) {
+        console.warn(`Warning: Venv python not found at ${exe}. Falling back to system 'python'.`);
+        exe = 'python';
+    }
+
+    pythonProcess = spawn(exe, [pythonScriptPath]);
 
     let buffer = '';
 
@@ -185,9 +207,13 @@ app.post('/api/start_live', (req, res) => {
     }
     args.push('--landmarks', showLandmarks ? 'true' : 'false');
 
-    console.log(`Starting Live Mode with args: ${args.join(' ')}`);
+    let exe = PYTHON_EXECUTABLE;
+    if (!fs.existsSync(exe)) {
+        exe = 'python';
+    }
+    console.log(`Starting Live Mode with: ${exe} ${args.join(' ')}`);
 
-    liveProcess = spawn('python', args);
+    liveProcess = spawn(exe, args);
 
     liveProcess.stdout.on('data', (data) => {
         console.log(`LIVE OUT: ${data}`);
