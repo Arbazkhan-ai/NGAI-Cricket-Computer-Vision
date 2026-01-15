@@ -1,14 +1,19 @@
 
 import { Camera, Video, Image as ImageIcon, Smartphone, MonitorPlay, UploadCloud, Loader2 } from 'lucide-react';
 import { useState, useRef, useEffect } from 'react';
+import { useNavigate } from 'react-router-dom';
 import { analyzeImage, type DetectionResult } from '../services/api';
 
 export default function DetectionSource() {
+    const navigate = useNavigate();
     const [selectedMethod, setSelectedMethod] = useState<string>('live');
     const [selectedCameraType, setSelectedCameraType] = useState<string>('mobile');
     const [isAnalyzing, setIsAnalyzing] = useState(false);
     const [analysisResult, setAnalysisResult] = useState<any[] | null>(null);
     const [previewUrl, setPreviewUrl] = useState<string | null>(null);
+    const [ipAddress, setIpAddress] = useState('');
+    const [port, setPort] = useState('');
+    const [showLandmarks, setShowLandmarks] = useState(false);
     const fileInputRef = useRef<HTMLInputElement>(null);
     const videoRef = useRef<HTMLVideoElement>(null);
     const imageRef = useRef<HTMLImageElement>(null);
@@ -251,10 +256,45 @@ export default function DetectionSource() {
                             ))}
                         </div>
 
+                        <div className="grid grid-cols-1 md:grid-cols-2 gap-6 mb-8 max-w-2xl mx-auto">
+                            <div className="flex flex-col gap-2">
+                                <label className="text-sm font-semibold text-gray-700">IP Address (Optional)</label>
+                                <input
+                                    type="text"
+                                    placeholder="192.168.1.x"
+                                    value={ipAddress}
+                                    onChange={(e) => setIpAddress(e.target.value)}
+                                    className="border border-emerald-200 rounded-xl p-3 focus:outline-none focus:ring-2 focus:ring-emerald-500"
+                                />
+                            </div>
+                            <div className="flex flex-col gap-2">
+                                <label className="text-sm font-semibold text-gray-700">Port (Optional)</label>
+                                <input
+                                    type="text"
+                                    placeholder="8080"
+                                    value={port}
+                                    onChange={(e) => setPort(e.target.value)}
+                                    className="border border-emerald-200 rounded-xl p-3 focus:outline-none focus:ring-2 focus:ring-emerald-500"
+                                />
+                            </div>
+                        </div>
+
+                        <div className="flex justify-center mb-8">
+                            <label className="flex items-center gap-3 cursor-pointer group">
+                                <div className={`w-12 h-6 rounded-full p-1 transition-colors ${showLandmarks ? 'bg-emerald-500' : 'bg-gray-300'}`}
+                                    onClick={() => setShowLandmarks(!showLandmarks)}>
+                                    <div className={`bg-white w-4 h-4 rounded-full shadow-md transform transition-transform ${showLandmarks ? 'translate-x-6' : ''}`} />
+                                </div>
+                                <span className="font-semibold text-gray-700 group-hover:text-emerald-600 transition-colors">Show Landmarks</span>
+                            </label>
+                        </div>
+
                         <div className="flex justify-center">
-                            <button className="bg-emerald-500 hover:bg-emerald-600 text-white px-10 py-4 rounded-xl font-bold transition-all shadow-lg shadow-emerald-200 flex items-center gap-3 active:scale-95">
+                            <button
+                                onClick={() => navigate('/live', { state: { ipAddress, port, showLandmarks } })}
+                                className="bg-emerald-500 hover:bg-emerald-600 text-white px-10 py-4 rounded-xl font-bold transition-all shadow-lg shadow-emerald-200 flex items-center gap-3 active:scale-95">
                                 <Camera className="w-5 h-5" />
-                                <span>Connect Camera</span>
+                                <span>Start Live Detection</span>
                             </button>
                         </div>
                     </div>

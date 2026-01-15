@@ -47,6 +47,7 @@ const upload = multer({ storage: storage });
 // PERSISTENT JAVASCRIPT/PYTHON BRIDGE
 // ------------------------------------------------------
 let pythonProcess = null;
+let liveProcess = null; // Handle for the live detection window process
 const requestQueue = []; // Array of {resolve, reject} objects corresponding to sent requests
 
 // Function to start the persistent Python process
@@ -157,6 +158,68 @@ app.get('/api/history', (req, res) => {
         }
         res.json(rows);
     });
+});
+
+// Start Live Detection Process
+app.post('/api/start_live', (req, res) => {
+    const { ip, port, showLandmarks } = req.body;
+
+    // Kill existing process if running
+    if (liveProcess) {
+        try {
+            liveProcess.kill();
+            console.log('Killed previous live process');
+        } catch (e) {
+            console.error('Error killing process:', e);
+        }
+    }
+
+    const scriptPath = path.join(__dirname, 'live_inference.py');
+    const args = [scriptPath];
+
+    if (ip) {
+        args.push('--ip', ip);
+    }
+    if (port) {
+        args.push('--port', port);
+    }
+    args.push('--landmarks', showLandmarks ? 'true' : 'false');
+
+    console.log(`Starting Live Mode with args: ${args.join(' ')}`);
+
+    liveProcess = spawn('python', args);
+
+    liveProcess.stdout.on('data', (data) => {
+        console.log(`LIVE OUT: ${data}`);
+    });
+
+    liveProcess.stderr.on('data', (data) => {
+        console.error(`LIVE ERR: ${data}`);
+    });
+
+    liveProcess.on('close', (code) => {
+        console.log(`Live process exited with code ${code}`);
+        liveProcess = null;
+    });
+
+    res.json({ message: 'Live detection started' });
+});
+
+// Stop Live Detection Process
+app.post('/api/stop_live', (req, res) => {
+    if (liveProcess) {
+        try {
+            liveProcess.kill();
+            liveProcess = null;
+            console.log('Stopped live process via API');
+            res.json({ message: 'Live detection stopped' });
+        } catch (e) {
+            console.error('Error stopping process:', e);
+            res.status(500).json({ error: 'Failed to stop process' });
+        }
+    } else {
+        res.json({ message: 'No live process running' });
+    }
 });
 
 // Auth Routes

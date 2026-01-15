@@ -64,6 +64,29 @@ export const getHistory = async () => {
     }
     return response.json();
 };
+
+export const startLiveDetection = async (ip: string, port: string, showLandmarks: boolean) => {
+    const response = await fetch(`${API_URL}/start_live`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ ip, port, showLandmarks }),
+    });
+    if (!response.ok) {
+        throw new Error('Failed to start live detection');
+    }
+    return response.json();
+};
+
+export const stopLiveDetection = async () => {
+    const response = await fetch(`${API_URL}/stop_live`, {
+        method: 'POST',
+    });
+    if (!response.ok) {
+        throw new Error('Failed to stop live detection');
+    }
+    return response.json();
+};
+
 export const forgotPassword = async (email: string) => {
     const response = await fetch(`${API_URL}/forgot-password`, {
         method: 'POST',

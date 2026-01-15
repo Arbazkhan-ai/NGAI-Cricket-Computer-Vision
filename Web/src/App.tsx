@@ -10,6 +10,7 @@ import RuleBasedGame from './pages/RuleBasedGame';
 import Analytics from './pages/Analytics';
 import MatchHistory from './pages/MatchHistory';
 import DetectionSource from './pages/DetectionSource';
+import LiveDetection from './pages/LiveDetection';
 import Settings from './pages/Settings';
 import LandingPage from './pages/LandingPage';
 import DashboardLayout from './components/DashboardLayout';
@@ -32,6 +33,11 @@ function App() {
           <Route path="/source" element={
             <DashboardLayout>
               <DetectionSource />
+            </DashboardLayout>
+          } />
+          <Route path="/live" element={
+            <DashboardLayout>
+              <LiveDetection />
             </DashboardLayout>
           } />
           <Route path="/analytics" element={
