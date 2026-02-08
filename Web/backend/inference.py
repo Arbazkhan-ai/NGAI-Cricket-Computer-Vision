@@ -15,8 +15,8 @@ import pickle
 import cv2
 import numpy as np
 import warnings
-from ultralytics import YOLO
 import mediapipe as mp
+from ultralytics import YOLO
 
 # Suppress warnings
 warnings.filterwarnings("ignore")
@@ -32,22 +32,30 @@ PKL_PATH = os.path.join(ROOT_DIR, 'model_data', 'cricket_shot_model.pkl')
 # ---------------------------------------------------------
 # GLOBAL MODEL LOADING (Load ONCE)
 # ---------------------------------------------------------
+
+    
 yolo_model = None
 pkl_model = None
+mp_pose = None
+pose = None
 
+# Global Initialization
 try:
     # Load YOLO
     if os.path.exists(YOLO_PATH):
         yolo_model = YOLO(YOLO_PATH)
-    
+
     # Load PKL
     if os.path.exists(PKL_PATH):
         with open(PKL_PATH, "rb") as f:
             pkl_model = pickle.load(f)
 
+    # Init MediaPipe Globally
+    mp_pose = mp.solutions.pose
+    # Using static_image_mode=True is safer for independent frames
+    pose = mp_pose.Pose(static_image_mode=True, min_detection_confidence=0.5, model_complexity=1)
+
 except Exception as e:
-    # If loading fails here, we'll handle it during usage or exit
-    # We can't print error yet as we are suppressed
     pass
 
 # Restore stdout now that models are loaded (we want to print results)
@@ -55,7 +63,7 @@ except Exception as e:
 sys.stdout = original_stdout
 # sys.stderr = original_stderr # Keep stderr suppressed or restore for debug
 
-def run_inference(image_path, mode="yolo"):
+def run_inference(image_path, mode="mediapipe"):
     output = []
     
     try:
@@ -63,58 +71,72 @@ def run_inference(image_path, mode="yolo"):
         # MODE: MEDIA_PIPE (PKL)
         # ---------------------------------------------------------
         if mode == 'pkl' or mode == 'mediapipe':
+            global pkl_model, pose
+            
             if pkl_model is None:
                 if not os.path.exists(PKL_PATH):
                      raise FileNotFoundError(f"Pickle model not found at {PKL_PATH}")
-                # Try loading again if not loaded globally
                 with open(PKL_PATH, "rb") as f:
-                    globals()['pkl_model'] = pickle.load(f)
+                    pkl_model = pickle.load(f)
 
-            # Init MediaPipe (Cheap to init)
-            mp_pose = mp.solutions.pose
-            with mp_pose.Pose(static_image_mode=True, min_detection_confidence=0.3, model_complexity=1) as pose:
-                # Read Image
-                img = cv2.imread(image_path)
-                if img is None:
-                    raise ValueError(f"Could not read image at {image_path}")
+            if pose is None:
+                 mp_pose = mp.solutions.pose
+                 pose = mp_pose.Pose(static_image_mode=True, min_detection_confidence=0.5, model_complexity=1)
 
-                img_rgb = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
-                results = pose.process(img_rgb)
+            # Read Image
+            img = cv2.imread(image_path)
+            if img is None:
+                raise ValueError(f"Could not read image at {image_path}")
 
-                if results.pose_landmarks:
-                    # Extract landmarks
-                    landmarks = results.pose_landmarks.landmark
-                    row = []
-                    for lm in landmarks:
-                        row.extend([lm.x, lm.y, lm.z, lm.visibility])
+            img_rgb = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
+            results = pose.process(img_rgb)
 
-                    # Predict
-                    prediction = pkl_model.predict([row])[0]
-                    prediction_str = str(prediction)
+            if results.pose_landmarks:
+                # Extract landmarks
+                landmarks = results.pose_landmarks.landmark
+                row = []
+                for lm in landmarks:
+                    row.extend([lm.x, lm.y, lm.z, lm.visibility])
 
-                    # Name Mapping
-                    NAME_MAPPING = {
-                        "Stap-Out": "Step-Shot",
-                        "stop-out": "Step-Shot",
-                        "Pull shot": "Pull Shot",
-                        "Straight Drive": "Straight Drive",
-                        "Batsman": "Batsman",
-                        "Drive": "Drive",
-                        "Sweep": "Sweep"
-                    }
-                    final_name = NAME_MAPPING.get(prediction_str, prediction_str)
+                # Predict
+                prediction = pkl_model.predict([row])[0]
+                prediction_str = str(prediction)
 
-                    conf = 1.0
-                    if hasattr(pkl_model, "predict_proba"):
-                         probs = pkl_model.predict_proba([row])[0]
-                         conf = float(max(probs))
+                # Name Mapping
+                NAME_MAPPING = {
+                    "Stap-Out": "Step-Shot",
+                    "stop-out": "Step-Shot",
+                    "Pull shot": "Pull Shot",
+                    "Straight Drive": "Straight Drive",
+                    "Batsman": "Batsman",
+                    "Drive": "Drive",
+                    "Sweep": "Sweep"
+                }
+                final_name = NAME_MAPPING.get(prediction_str, prediction_str)
 
-                    output.append({
-                        "type": "classification",
-                        "class_name": final_name,
-                        "conf": conf,
-                        "model": "mediapipe"
-                    })
+                conf = 1.0
+                if hasattr(pkl_model, "predict_proba"):
+                        probs = pkl_model.predict_proba([row])[0]
+                        conf = float(max(probs))
+
+                # Calculate Bounding Box from Landmarks
+                h, w, _ = img.shape
+                x_coords = [lm.x * w for lm in landmarks]
+                y_coords = [lm.y * h for lm in landmarks]
+                x1, y1 = min(x_coords), min(y_coords)
+                x2, y2 = max(x_coords), max(y_coords)
+
+                # Extract Keypoints for Frontend
+                keypoints = [[lm.x, lm.y] for lm in landmarks]
+
+                output.append({
+                    "type": "box",
+                    "class_name": final_name,
+                    "conf": conf,
+                    "xyxy": [x1, y1, x2, y2],
+                    "keypoints": keypoints,
+                    "model": "mediapipe"
+                })
 
         # ---------------------------------------------------------
         # MODE: YOLO (Video/Photo)

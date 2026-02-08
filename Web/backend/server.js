@@ -26,6 +26,7 @@ const transporter = nodemailer.createTransport({
 // Enable CORS
 app.use(cors());
 app.use(express.json());
+app.use('/uploads', express.static(path.join(__dirname, 'uploads')));
 
 // Configure Multer for file uploads
 const storage = multer.diskStorage({
@@ -172,6 +173,53 @@ app.post('/api/analyze', upload.single('image'), async (req, res) => {
     }
 });
 
+// Endpoint to handle video upload and analysis
+app.post('/api/analyze-video', upload.single('video'), async (req, res) => {
+    if (!req.file) {
+        return res.status(400).json({ error: 'No video file provided' });
+    }
+
+    const videoPath = req.file.path;
+    const mode = req.body.mode || 'mediapipe';
+
+    // Output filename
+    const filename = path.basename(videoPath, path.extname(videoPath)) + '_processed.mp4';
+    const outputPath = path.join(path.dirname(videoPath), filename);
+
+    console.log(`Processing video: ${videoPath} with mode ${mode}`);
+
+    // Call process_video.py
+    const scriptPath = path.join(__dirname, 'process_video.py');
+    const args = [scriptPath, '--input', videoPath, '--output', outputPath, '--mode', mode];
+
+    let exe = PYTHON_EXECUTABLE;
+    if (!fs.existsSync(exe)) {
+        exe = 'python';
+    }
+
+    const proc = spawn(exe, args);
+
+    proc.stdout.on('data', (data) => console.log(`VIDEO OUT: ${data}`));
+    proc.stderr.on('data', (data) => console.error(`VIDEO ERR: ${data}`));
+
+    proc.on('close', (code) => {
+        if (code === 0) {
+            // Success
+            // Return URL to the processed video
+            // Assuming server is running on same host, we just return the relative path or full URL
+            // Since we serve /uploads, the URL is /uploads/filename
+            const processedUrl = `/uploads/${filename}`;
+            res.json({
+                message: 'Video processing complete',
+                video_url: processedUrl
+            });
+        } else {
+            console.error(`Video processing failed with code ${code}`);
+            res.status(500).json({ error: 'Video processing failed' });
+        }
+    });
+});
+
 app.get('/api/history', (req, res) => {
     db.all("SELECT * FROM detections ORDER BY timestamp DESC", [], (err, rows) => {
         if (err) {
@@ -189,7 +237,11 @@ app.post('/api/start_live', (req, res) => {
     // Kill existing process if running
     if (liveProcess) {
         try {
-            liveProcess.kill();
+            if (process.platform === 'win32') {
+                spawn('taskkill', ['/pid', liveProcess.pid, '/f', '/t']);
+            } else {
+                liveProcess.kill();
+            }
             console.log('Killed previous live process');
         } catch (e) {
             console.error('Error killing process:', e);
@@ -220,7 +272,15 @@ app.post('/api/start_live', (req, res) => {
     });
 
     liveProcess.stderr.on('data', (data) => {
-        console.error(`LIVE ERR: ${data}`);
+        const output = data.toString();
+        // Flask logs requests to stderr, so we filter out successful requests and startup messages
+        if (output.includes('HIT') || output.includes('HTTP/1.1 200') || output.includes('Press CTRL+C') || output.includes('Running on')) {
+            // These are normal informational logs from Flask
+            // We can log them as info or omit them to reduce noise
+            // console.log(`LIVE INFO: ${output.trim()}`); 
+        } else {
+            console.error(`LIVE ERR: ${output}`);
+        }
     });
 
     liveProcess.on('close', (code) => {
@@ -235,7 +295,11 @@ app.post('/api/start_live', (req, res) => {
 app.post('/api/stop_live', (req, res) => {
     if (liveProcess) {
         try {
-            liveProcess.kill();
+            if (process.platform === 'win32') {
+                spawn('taskkill', ['/pid', liveProcess.pid, '/f', '/t']);
+            } else {
+                liveProcess.kill();
+            }
             liveProcess = null;
             console.log('Stopped live process via API');
             res.json({ message: 'Live detection stopped' });

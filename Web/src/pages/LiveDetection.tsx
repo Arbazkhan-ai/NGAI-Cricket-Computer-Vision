@@ -81,7 +81,7 @@ export default function LiveDetection() {
                 {status === 'Running' && !streamError ? (
                     <div className="w-full max-w-4xl relative rounded-2xl overflow-hidden shadow-lg border-4 border-emerald-500/20 bg-black aspect-video flex items-center justify-center">
                         <img
-                            src={`http://localhost:8080/video_feed?t=${Date.now()}`}
+                            src={`http://127.0.0.1:8080/video_feed?t=${Date.now()}`}
                             alt="Live Detection Feed"
                             className="w-full h-full object-contain"
                             onError={(e) => {

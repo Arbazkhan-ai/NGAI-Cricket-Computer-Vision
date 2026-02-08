@@ -4,21 +4,28 @@ import { useState, useRef, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { analyzeImage, type DetectionResult } from '../services/api';
 
+
+
 export default function DetectionSource() {
     const navigate = useNavigate();
     const [selectedMethod, setSelectedMethod] = useState<string>('live');
     const [selectedCameraType, setSelectedCameraType] = useState<string>('mobile');
+
     const [isAnalyzing, setIsAnalyzing] = useState(false);
     const [analysisResult, setAnalysisResult] = useState<any[] | null>(null);
     const [previewUrl, setPreviewUrl] = useState<string | null>(null);
+
     const [ipAddress, setIpAddress] = useState('');
     const [port, setPort] = useState('');
     const [showLandmarks, setShowLandmarks] = useState(false);
+
     const fileInputRef = useRef<HTMLInputElement>(null);
-    const videoRef = useRef<HTMLVideoElement>(null);
     const imageRef = useRef<HTMLImageElement>(null);
+    const videoRef = useRef<HTMLVideoElement>(null);
     const canvasRef = useRef<HTMLCanvasElement>(null);
     const overlayRef = useRef<HTMLCanvasElement>(null);
+
+    const [useCustomUrl, setUseCustomUrl] = useState(false);
 
     // Shot Names
     const SHOT_NAMES: Record<number, string> = {
@@ -72,7 +79,6 @@ export default function DetectionSource() {
                 // Draw Background Badge (Emerald)
                 ctx.fillStyle = '#10b981';
                 ctx.beginPath();
-                // Simple rounded-like rect
                 ctx.roundRect(labelX, labelY - bgHeight, bgWidth, bgHeight, 8);
                 ctx.fill();
 
@@ -80,56 +86,47 @@ export default function DetectionSource() {
                 ctx.fillStyle = '#ffffff';
                 ctx.fillText(shotName, labelX + padding, labelY - (padding * 0.4));
             }
+
+            // Draw Skeleton if available
+            if (det.keypoints) {
+                // MediaPipe Pose Connections (Simplified set)
+                const connections = [
+                    [11, 12], [11, 13], [13, 15], // Left Arm
+                    [12, 14], [14, 16],           // Right Arm
+                    [11, 23], [12, 24], [23, 24], // Torso
+                    [23, 25], [25, 27],           // Left Leg
+                    [24, 26], [26, 28]            // Right Leg
+                ];
+
+                const w = ctx.canvas.width;
+                const h = ctx.canvas.height;
+
+                // Draw Lines
+                ctx.strokeStyle = '#f57542'; // Orange
+                ctx.lineWidth = 3;
+                ctx.beginPath();
+                connections.forEach(([i, j]) => {
+                    const kp1 = det.keypoints![i];
+                    const kp2 = det.keypoints![j];
+                    if (kp1 && kp2) {
+                        ctx.moveTo(kp1[0] * w, kp1[1] * h);
+                        ctx.lineTo(kp2[0] * w, kp2[1] * h);
+                    }
+                });
+                ctx.stroke();
+
+                // Draw Points
+                ctx.fillStyle = '#f542e6'; // Pink
+                det.keypoints.forEach((kp) => {
+                    if (kp) {
+                        ctx.beginPath();
+                        ctx.arc(kp[0] * w, kp[1] * h, 4, 0, 2 * Math.PI);
+                        ctx.fill();
+                    }
+                });
+            }
         });
     };
-
-    // Effect to draw on Image when result changes
-
-
-
-    const handleFileChange = async (event: React.ChangeEvent<HTMLInputElement>) => {
-        const file = event.target.files?.[0];
-        if (!file) return;
-
-        // Preview
-        const url = URL.createObjectURL(file);
-        setPreviewUrl(url);
-        setAnalysisResult(null);
-
-        // Analyze Image
-        if (selectedMethod === 'image') {
-            setIsAnalyzing(true);
-            try {
-                const response = await analyzeImage(file, 'yolo');
-                if (response.data) {
-                    setAnalysisResult(response.data.map(mapDetection));
-                }
-            } catch (error) {
-                console.error('Analysis failed', error);
-                alert('Analysis failed. Check backend console.');
-            } finally {
-                setIsAnalyzing(false);
-            }
-        } else if (selectedMethod === 'video') {
-            // For video, we just set the preview up. The analysis will happen via effect or manual trigger on playback.
-            // We can auto-start playing.
-        }
-    };
-
-    // Draw effect for Image
-    // eslint-disable-next-line
-    useEffect(() => {
-        if (selectedMethod === 'image' && analysisResult && imageRef.current && overlayRef.current) {
-            const ctx = overlayRef.current.getContext('2d');
-            if (ctx && imageRef.current) {
-                if (imageRef.current.complete) {
-                    drawDetections(ctx, analysisResult, imageRef.current);
-                }
-            }
-        }
-    }, [analysisResult, selectedMethod]);
-
-    // Video Processing Effect
 
     const processVideoFrame = async () => {
         if (!videoRef.current || !canvasRef.current || videoRef.current.paused || videoRef.current.ended) return;
@@ -150,7 +147,7 @@ export default function DetectionSource() {
             if (!blob) return;
             const file = new File([blob], "frame.jpg", { type: "image/jpeg" });
             try {
-                const response = await analyzeImage(file, 'yolo');
+                const response = await analyzeImage(file, 'mediapipe');
                 if (response.data && response.data.length > 0) {
                     const mapped = response.data.map(mapDetection);
                     setAnalysisResult(mapped);
@@ -162,16 +159,63 @@ export default function DetectionSource() {
                             drawDetections(overlayCtx, mapped, video);
                         }
                     }
+                } else {
+                    if (overlayRef.current) {
+                        const overlayCtx = overlayRef.current.getContext('2d');
+                        overlayCtx?.clearRect(0, 0, overlayCtx.canvas.width, overlayCtx.canvas.height);
+                    }
                 }
             } catch (e) {
                 console.error(e);
             }
             // Continue loop
             if (!video.paused && !video.ended) {
-                requestAnimationFrame(() => setTimeout(processVideoFrame, 200)); // Faster 5fps
+                requestAnimationFrame(() => setTimeout(processVideoFrame, 150)); // Approx 6-7 FPS
             }
-        }, 'image/jpeg', 0.8);
+        }, 'image/jpeg', 0.6);
     };
+
+    const handleFileChange = async (event: React.ChangeEvent<HTMLInputElement>) => {
+        const file = event.target.files?.[0];
+        if (!file) return;
+
+        setAnalysisResult(null);
+        setIsAnalyzing(true);
+
+        try {
+            if (selectedMethod === 'image') {
+                // Preview for Image
+                const url = URL.createObjectURL(file);
+                setPreviewUrl(url); // Show local preview immediately
+
+                const response = await analyzeImage(file, 'yolo');
+                if (response.data) {
+                    setAnalysisResult(response.data.map(mapDetection));
+                }
+            } else if (selectedMethod === 'video') {
+                // For video, we show local preview and start live detection on play
+                const url = URL.createObjectURL(file);
+                setPreviewUrl(url);
+            }
+        } catch (error) {
+            console.error('Analysis failed', error);
+            alert('Analysis failed. Check backend console.');
+        } finally {
+            setIsAnalyzing(false);
+        }
+    };
+
+    // Effect to draw on Image when result changes
+    useEffect(() => {
+        if (selectedMethod === 'image' && analysisResult && imageRef.current && overlayRef.current) {
+            const ctx = overlayRef.current.getContext('2d');
+            if (ctx && imageRef.current) {
+                if (imageRef.current.complete) {
+                    drawDetections(ctx, analysisResult, imageRef.current);
+                }
+            }
+        }
+    }, [analysisResult, selectedMethod]);
 
     const triggerFileInput = () => {
         fileInputRef.current?.click();
@@ -189,12 +233,17 @@ export default function DetectionSource() {
             <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
                 {[
                     { id: 'live', title: 'Live Camera', desc: 'Real-Time Detection', icon: Camera },
-                    { id: 'video', title: 'Video Upload', desc: 'Fast-Time Detection', icon: Video },
-                    { id: 'image', title: 'Image', desc: 'Analyze Single Frame', icon: ImageIcon },
+                    { id: 'video', title: 'Video Upload', desc: 'Batch Processing', icon: Video },
+                    { id: 'image', title: 'Image', desc: 'Single Frame', icon: ImageIcon },
                 ].map((method) => (
                     <div
                         key={method.id}
-                        onClick={() => setSelectedMethod(method.id)}
+                        onClick={() => {
+                            setSelectedMethod(method.id);
+                            setPreviewUrl(null);
+
+                            setAnalysisResult(null);
+                        }}
                         className={`
                             relative bg-white p-8 rounded-3xl border transition-all cursor-pointer group flex flex-col items-center justify-center text-center gap-4 h-48
                             ${selectedMethod === method.id
@@ -223,6 +272,8 @@ export default function DetectionSource() {
             <div className={`
                 border border-emerald-200 rounded-3xl p-8 transition-all duration-500 bg-emerald-50/30
             `}>
+
+
 
                 {selectedMethod === 'live' && (
                     <div className="animate-in fade-in slide-in-from-bottom-4 duration-500">
@@ -256,28 +307,58 @@ export default function DetectionSource() {
                             ))}
                         </div>
 
-                        <div className="grid grid-cols-1 md:grid-cols-2 gap-6 mb-8 max-w-2xl mx-auto">
-                            <div className="flex flex-col gap-2">
-                                <label className="text-sm font-semibold text-gray-700">IP Address (Optional)</label>
+                        <div className="flex justify-center mb-6">
+                            <label className="flex items-center gap-2 cursor-pointer">
                                 <input
-                                    type="text"
-                                    placeholder="192.168.1.x"
-                                    value={ipAddress}
-                                    onChange={(e) => setIpAddress(e.target.value)}
-                                    className="border border-emerald-200 rounded-xl p-3 focus:outline-none focus:ring-2 focus:ring-emerald-500"
+                                    type="checkbox"
+                                    checked={useCustomUrl}
+                                    onChange={(e) => setUseCustomUrl(e.target.checked)}
+                                    className="w-5 h-5 text-emerald-500 rounded focus:ring-emerald-500"
                                 />
-                            </div>
-                            <div className="flex flex-col gap-2">
-                                <label className="text-sm font-semibold text-gray-700">Port (Optional)</label>
-                                <input
-                                    type="text"
-                                    placeholder="8080"
-                                    value={port}
-                                    onChange={(e) => setPort(e.target.value)}
-                                    className="border border-emerald-200 rounded-xl p-3 focus:outline-none focus:ring-2 focus:ring-emerald-500"
-                                />
-                            </div>
+                                <span className="text-gray-700 font-medium">Use Custom Stream URL</span>
+                            </label>
                         </div>
+
+                        {useCustomUrl ? (
+                            <div className="mb-8 max-w-2xl mx-auto">
+                                <div className="flex flex-col gap-2">
+                                    <label className="text-sm font-semibold text-gray-700">Full Stream URL</label>
+                                    <input
+                                        type="text"
+                                        placeholder="http://192.168.1.5:8080/video or rtsp://..."
+                                        value={ipAddress}
+                                        onChange={(e) => setIpAddress(e.target.value)}
+                                        className="border border-emerald-200 rounded-xl p-3 focus:outline-none focus:ring-2 focus:ring-emerald-500 w-full"
+                                    />
+                                    <p className="text-xs text-gray-500">
+                                        Enter the exact URL provided by your IP camera app (supports http, https, rtsp).
+                                    </p>
+                                </div>
+                            </div>
+                        ) : (
+                            <div className="grid grid-cols-1 md:grid-cols-2 gap-6 mb-8 max-w-2xl mx-auto">
+                                <div className="flex flex-col gap-2">
+                                    <label className="text-sm font-semibold text-gray-700">IP Address (Optional)</label>
+                                    <input
+                                        type="text"
+                                        placeholder="192.168.1.x"
+                                        value={ipAddress}
+                                        onChange={(e) => setIpAddress(e.target.value)}
+                                        className="border border-emerald-200 rounded-xl p-3 focus:outline-none focus:ring-2 focus:ring-emerald-500"
+                                    />
+                                </div>
+                                <div className="flex flex-col gap-2">
+                                    <label className="text-sm font-semibold text-gray-700">Port (Optional)</label>
+                                    <input
+                                        type="text"
+                                        placeholder="8080"
+                                        value={port}
+                                        onChange={(e) => setPort(e.target.value)}
+                                        className="border border-emerald-200 rounded-xl p-3 focus:outline-none focus:ring-2 focus:ring-emerald-500"
+                                    />
+                                </div>
+                            </div>
+                        )}
 
                         <div className="flex justify-center mb-8">
                             <label className="flex items-center gap-3 cursor-pointer group">
@@ -291,7 +372,13 @@ export default function DetectionSource() {
 
                         <div className="flex justify-center">
                             <button
-                                onClick={() => navigate('/live', { state: { ipAddress, port, showLandmarks } })}
+                                onClick={() => navigate('/live', {
+                                    state: {
+                                        ipAddress,
+                                        port: useCustomUrl ? '' : port,
+                                        showLandmarks
+                                    }
+                                })}
                                 className="bg-emerald-500 hover:bg-emerald-600 text-white px-10 py-4 rounded-xl font-bold transition-all shadow-lg shadow-emerald-200 flex items-center gap-3 active:scale-95">
                                 <Camera className="w-5 h-5" />
                                 <span>Start Live Detection</span>
@@ -303,8 +390,12 @@ export default function DetectionSource() {
                 {(selectedMethod === 'video' || selectedMethod === 'image') && (
                     <div className="animate-in fade-in slide-in-from-bottom-4 duration-500 flex flex-col items-center justify-center py-8">
                         <div
-                            onClick={triggerFileInput}
-                            className="w-full max-w-2xl border-2 border-dashed border-emerald-300 rounded-3xl p-12 flex flex-col items-center justify-center bg-white/50 hover:bg-white/80 transition-colors cursor-pointer group"
+                            onClick={!isAnalyzing ? triggerFileInput : undefined}
+                            className={`
+                                w-full max-w-2xl border-2 border-dashed border-emerald-300 rounded-3xl p-12 flex flex-col items-center justify-center 
+                                ${!isAnalyzing ? 'bg-white/50 hover:bg-white/80 cursor-pointer' : 'bg-gray-50 cursor-wait'} 
+                                transition-colors group
+                            `}
                         >
                             <input
                                 type="file"
@@ -312,9 +403,13 @@ export default function DetectionSource() {
                                 className="hidden"
                                 accept={selectedMethod === 'video' ? "video/*" : "image/*"}
                                 onChange={handleFileChange}
+                                disabled={isAnalyzing}
                             />
 
-                            {previewUrl && selectedMethod === 'image' ? (
+                            {/* PREVIEW AREA */}
+
+                            {/* 1. Image Result */}
+                            {previewUrl && selectedMethod === 'image' && (
                                 <div className="mb-6 flex justify-center w-full">
                                     <div className="relative inline-block">
                                         <img
@@ -333,26 +428,20 @@ export default function DetectionSource() {
                                             ref={overlayRef}
                                             className="absolute inset-0 w-full h-full pointer-events-none"
                                         />
-                                        {isAnalyzing && (
-                                            <div className="absolute inset-0 bg-black/50 flex items-center justify-center rounded-lg">
-                                                <Loader2 className="w-10 h-10 text-white animate-spin" />
-                                            </div>
-                                        )}
                                     </div>
                                 </div>
-                            ) : selectedMethod === 'video' && previewUrl ? (
+                            )}
+
+                            {/* 2. Video Preview with Live Detection */}
+                            {previewUrl && selectedMethod === 'video' && (
                                 <div className="mb-6 flex justify-center w-full">
                                     <div className="relative inline-block">
                                         <video
                                             ref={videoRef}
                                             src={previewUrl}
                                             controls
-                                            autoPlay
-                                            muted
                                             className="max-h-[60vh] max-w-full h-auto rounded-lg shadow-md block"
-                                            onPlay={() => {
-                                                processVideoFrame();
-                                            }}
+                                            onPlay={() => processVideoFrame()}
                                         />
                                         <canvas
                                             ref={overlayRef}
@@ -361,27 +450,58 @@ export default function DetectionSource() {
                                         <canvas ref={canvasRef} className="hidden" />
                                     </div>
                                 </div>
-                            ) : (
-                                <div className="bg-emerald-100 p-4 rounded-full mb-4 group-hover:scale-110 transition-transform">
-                                    <UploadCloud className="w-8 h-8 text-emerald-600" />
-                                </div>
                             )}
 
-                            <h3 className="text-xl font-bold text-gray-800 mb-2">
-                                {selectedMethod === 'video' ? 'Upload Video File' : 'Upload Image File'}
-                            </h3>
-                            <p className="text-gray-500 text-center text-sm mb-6 max-w-sm">
-                                {selectedMethod === 'video'
-                                    ? 'Drag and drop your cricket match video here, or click to browse. Supports MP4, MOV, AVI.'
-                                    : 'Drag and drop your image here, or click to browse. Supports JPG, PNG, WEBP.'
-                                }
-                            </p>
-                            <button className="bg-emerald-500 hover:bg-emerald-600 text-white px-8 py-3 rounded-xl font-bold transition-all shadow-lg shadow-emerald-200 active:scale-95">
-                                {isAnalyzing ? 'Analyzing...' : 'Browse Files'}
-                            </button>
+                            {/* Loading State */}
+                            {isAnalyzing ? (
+                                <div className="flex flex-col items-center text-emerald-600">
+                                    <Loader2 className="w-12 h-12 animate-spin mb-4" />
+                                    <h3 className="text-xl font-bold">Processing...</h3>
+                                    <p className="text-sm opacity-70">
+                                        Running {selectedMethod === 'image' ? 'YOLO' : 'MediaPipe'} model...
+                                    </p>
+                                </div>
+                            ) : (
+                                !previewUrl && (
+                                    <>
+                                        <div className="bg-emerald-100 p-4 rounded-full mb-4 group-hover:scale-110 transition-transform">
+                                            <UploadCloud className="w-8 h-8 text-emerald-600" />
+                                        </div>
+
+                                        <h3 className="text-xl font-bold text-gray-800 mb-2">
+                                            {selectedMethod === 'video' ? 'Upload Video File' : 'Upload Image File'}
+                                        </h3>
+                                        <p className="text-gray-500 text-center text-sm mb-6 max-w-sm">
+                                            {selectedMethod === 'video'
+                                                ? 'Upload your cricket match video for live analysis.'
+                                                : 'Drag and drop your image here, or click to browse.'
+                                            }
+                                        </p>
+                                        <button className="bg-emerald-500 hover:bg-emerald-600 text-white px-8 py-3 rounded-xl font-bold transition-all shadow-lg shadow-emerald-200 active:scale-95">
+                                            Browse Files
+                                        </button>
+                                    </>
+                                )
+                            )}
+
+                            {/* Reset Button if showing result */}
+                            {((previewUrl && !isAnalyzing)) && (
+                                <button
+                                    onClick={(e) => {
+                                        e.stopPropagation();
+                                        setPreviewUrl(null);
+                                        setAnalysisResult(null);
+                                    }}
+                                    className="mt-6 text-emerald-600 font-semibold hover:underline"
+                                >
+                                    Analyze Another
+                                </button>
+                            )}
+
                         </div>
 
-                        {analysisResult && analysisResult.length > 0 && (
+                        {/* Classification Results */}
+                        {analysisResult && analysisResult.length > 0 && (selectedMethod === 'image' || selectedMethod === 'video') && (
                             <div className="mt-8 w-full max-w-2xl bg-white p-6 rounded-2xl border border-emerald-100 shadow-sm text-center">
                                 <h3 className="font-bold text-emerald-800 mb-2">Detected Shot</h3>
                                 <div className="text-3xl font-bold text-gray-800">
@@ -390,8 +510,13 @@ export default function DetectionSource() {
                                 <div className="text-sm text-emerald-600 font-bold mt-1">
                                     Confidence: {(analysisResult[0].conf * 100).toFixed(0)}%
                                 </div>
+                                <div className="text-xs text-gray-400 mt-2 uppercase tracking-wide">
+                                    Model: {analysisResult[0].model || (selectedMethod === 'image' ? 'YOLO' : 'MediaPipe')}
+                                </div>
                             </div>
                         )}
+
+
                     </div>
                 )}
 

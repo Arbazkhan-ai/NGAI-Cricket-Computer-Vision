@@ -34,6 +34,23 @@ export const analyzeImage = async (file: File, mode: 'mediapipe' | 'yolo' = 'med
     return response.json();
 };
 
+export const analyzeVideo = async (file: File, mode: 'mediapipe' | 'yolo' = 'mediapipe'): Promise<{ message: string, video_url: string }> => {
+    const formData = new FormData();
+    formData.append('video', file);
+    formData.append('mode', mode);
+
+    const response = await fetch(`${API_URL}/analyze-video`, {
+        method: 'POST',
+        body: formData,
+    });
+
+    if (!response.ok) {
+        throw new Error('Failed to analyze video');
+    }
+
+    return response.json();
+};
+
 // Auth
 export const signup = async (data: any) => {
     const response = await fetch(`${API_URL}/signup`, {
