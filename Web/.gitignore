@@ -6,4 +6,6 @@ __pycache__
 venv
 env
 .DS_Store
-*.pt
+*.mp4
+backend/uploads/
+debug_images/

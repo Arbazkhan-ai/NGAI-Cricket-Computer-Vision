@@ -2,3 +2,7 @@ venv/
 __pycache__/
 node_modules/
 .env
+*.mp4
+Web/backend/uploads/
+Web/debug_images/
+Web/dist/

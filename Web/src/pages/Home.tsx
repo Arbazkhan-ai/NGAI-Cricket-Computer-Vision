@@ -179,9 +179,9 @@ export default function Home() {
     const activeRules = rules.filter(r => r.active);
 
     return (
-        <div className="grid grid-cols-12 gap-6 h-full pb-8">
+        <div className="grid grid-cols-1 lg:grid-cols-12 gap-4 lg:gap-6 h-full pb-8">
             {/* Left Column - Live Feed */}
-            <div className="col-span-12 lg:col-span-8 flex flex-col gap-4">
+            <div className="col-span-1 lg:col-span-8 flex flex-col gap-4">
                 <div className="bg-gray-900 rounded-3xl overflow-hidden shadow-2xl relative aspect-video group border border-gray-800">
                     {/* Video Feed */}
                     <div className="absolute inset-0 bg-black flex items-center justify-center overflow-hidden">
@@ -219,63 +219,61 @@ export default function Home() {
                     </div>
 
                     {/* Overlays - Shot Detection */}
-                    {/* Only show these overlays if needed, or keeping them static for demo */}
-                    <div className="absolute top-6 left-6 flex flex-col gap-2">
-                        <div className="bg-black/60 backdrop-blur-md text-white px-5 py-3 rounded-2xl border border-white/10 shadow-lg">
+                    <div className="absolute top-4 left-4 lg:top-6 lg:left-6 flex flex-col gap-2">
+                        <div className="bg-black/60 backdrop-blur-md text-white px-3 py-2 lg:px-5 lg:py-3 rounded-xl lg:rounded-2xl border border-white/10 shadow-lg">
                             <div className="flex items-center gap-2 mb-1">
                                 <Target className="w-3 h-3 text-emerald-400" />
-                                <span className="text-[10px] text-emerald-400 font-bold uppercase tracking-wider">Shot Detection</span>
+                                <span className="text-[8px] lg:text-[10px] text-emerald-400 font-bold uppercase tracking-wider">Shot Detection</span>
+                            </div>
+                            <div className="font-bold text-sm lg:text-lg leading-none">
+                                {lastDetection?.class_name || 'Waiting...'}
                             </div>
                         </div>
-                        <div className="font-bold text-lg leading-none">
-                            {lastDetection?.class_name || 'Waiting for Shot...'}
-                        </div>
                     </div>
 
                 </div>
 
-                {/* Overlays - Status */}
-                <div className="absolute bottom-6 left-6">
-                    <div className="bg-emerald-600 text-white px-6 py-3 rounded-2xl border border-emerald-500 shadow-xl flex items-center gap-3">
-                        <div className="bg-white/20 p-1.5 rounded-full">
-                            <Shield className="w-4 h-4 text-white" />
+                {/* Overlays - Status & Score */}
+                <div className="absolute bottom-4 left-4 lg:bottom-6 lg:left-6 flex flex-col gap-3">
+                    <div className="bg-emerald-600 text-white px-4 py-2 lg:px-6 lg:py-3 rounded-xl lg:rounded-2xl border border-emerald-500 shadow-xl flex items-center gap-3">
+                        <div className="bg-white/20 p-1 rounded-full">
+                            <Shield className="w-3 h-3 lg:w-4 lg:h-4 text-white" />
                         </div>
                         <div>
-                            <div className="text-[10px] font-bold uppercase opacity-80">LBW Status</div>
-                            <div className="font-bold text-lg leading-none">Not Out</div>
+                            <div className="text-[8px] lg:text-[10px] font-bold uppercase opacity-80">LBW Status</div>
+                            <div className="font-bold text-sm lg:text-lg leading-none">Not Out</div>
                         </div>
                     </div>
                 </div>
 
-                {/* Confidence or Current Score if Game Active */}
-                <div className="absolute bottom-6 right-6">
+                <div className="absolute bottom-4 right-4 lg:bottom-6 lg:right-6">
                     {gameActive ? (
-                        <div className="bg-black/80 backdrop-blur-md text-white px-6 py-3 rounded-2xl border border-emerald-500/30 shadow-xl">
-                            <div className="text-[10px] font-bold uppercase opacity-80 text-right text-emerald-400">Current Score</div>
-                            <div className="font-bold text-3xl leading-none text-right">{score}</div>
+                        <div className="bg-black/80 backdrop-blur-md text-white px-4 py-2 lg:px-6 lg:py-3 rounded-xl lg:rounded-2xl border border-emerald-500/30 shadow-xl">
+                            <div className="text-[8px] lg:text-[10px] font-bold uppercase opacity-80 text-right text-emerald-400">Score</div>
+                            <div className="font-bold text-xl lg:text-3xl leading-none text-right">{score}</div>
                         </div>
                     ) : (
-                        <div className="bg-black/80 backdrop-blur-md text-emerald-400 px-6 py-3 rounded-2xl border border-emerald-500/30 shadow-xl">
-                            <div className="text-[10px] font-bold uppercase opacity-80 text-right">Confidence</div>
-                            <div className="font-bold text-3xl leading-none">
+                        <div className="bg-black/80 backdrop-blur-md text-emerald-400 px-4 py-2 lg:px-6 lg:py-3 rounded-xl lg:rounded-2xl border border-emerald-500/30 shadow-xl">
+                            <div className="text-[8px] lg:text-[10px] font-bold uppercase opacity-80 text-right">Confidence</div>
+                            <div className="font-bold text-xl lg:text-3xl leading-none">
                                 {lastDetection ? `${(lastDetection.conf * 100).toFixed(0)}%` : '0%'}
                             </div>
                         </div>
                     )}
                 </div>
                 {/* Meta Data */}
-                <div className="flex justify-between text-xs font-mono text-gray-400 bg-white px-4 py-2 rounded-xl shadow-sm border border-gray-100">
+                <div className="flex flex-col sm:flex-row justify-between gap-2 text-[10px] lg:text-xs font-mono text-gray-400 bg-white px-4 py-2 lg:py-3 rounded-xl shadow-sm border border-gray-100">
                     <span className="flex items-center gap-2">
                         <div className="w-1.5 h-1.5 bg-green-500 rounded-full" />
-                        Source: Live Camera Feed (Cam-01)
+                        Source: Cam-01
                     </span>
-                    <span>Resolution: 1920x1080 @ 60fps</span>
-                    <span className="text-emerald-600 font-bold">Latency: 45ms</span>
+                    <span className="hidden md:inline text-center">1920x1080 @ 60fps</span>
+                    <span className="text-emerald-600 font-bold text-right">Latency: 45ms</span>
                 </div>
             </div>
 
             {/* Right Column - Stats */}
-            <div className="col-span-12 lg:col-span-4 flex flex-col gap-6">
+            <div className="col-span-1 lg:col-span-4 flex flex-col gap-4 lg:gap-6">
                 {/* Current Detection */}
                 <div className="bg-white rounded-3xl p-6 shadow-[0_8px_30px_rgb(0,0,0,0.04)] border border-gray-100">
                     <div className="flex items-center justify-between mb-6">

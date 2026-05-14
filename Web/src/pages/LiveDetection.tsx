@@ -10,6 +10,8 @@ export default function LiveDetection() {
     const { ipAddress, port, showLandmarks } = location.state || {};
     const [status, setStatus] = useState('Initializing...');
     const [streamError, setStreamError] = useState(false);
+    const [countdown, setCountdown] = useState<number | null>(null);
+    const [liveScore, setLiveScore] = useState(0);
 
     const [error, setError] = useState<string | null>(null);
 
@@ -20,7 +22,10 @@ export default function LiveDetection() {
             try {
                 setStatus('Starting Detection Service...');
                 await startLiveDetection(ipAddress, port, showLandmarks);
-                if (mounted) setStatus('Running');
+                if (mounted) {
+                    setStatus('Running');
+                    setCountdown(3);
+                }
             } catch (err: any) {
                 if (mounted) {
                     setError(err.message || 'Failed to start detection');
@@ -38,6 +43,38 @@ export default function LiveDetection() {
         };
     }, [ipAddress, port, showLandmarks]);
 
+    useEffect(() => {
+        if (countdown === null) return;
+        
+        if (countdown > 0) {
+            const timer = setTimeout(() => {
+                setCountdown(prev => (prev !== null ? prev - 1 : null));
+            }, 1000);
+            return () => clearTimeout(timer);
+        } else if (countdown === 0) {
+            // Stay on "GO!" for 1 second
+            const timer = setTimeout(() => {
+                setCountdown(-1); // Use -1 to indicate finished
+            }, 1000);
+            return () => clearTimeout(timer);
+        }
+    }, [countdown]);
+
+    useEffect(() => {
+        if (status !== 'Running') return;
+
+        const interval = setInterval(async () => {
+            try {
+                const res = await fetch('http://127.0.0.1:8080/get_score');
+                const data = await res.json();
+                setLiveScore(data.score);
+            } catch (err) {
+                console.error("Score fetch error", err);
+            }
+        }, 500);
+
+        return () => clearInterval(interval);
+    }, [status]);
     const handleStop = async () => {
         try {
             await stopLiveDetection();
@@ -72,13 +109,25 @@ export default function LiveDetection() {
                     </button>
                 </div>
 
+                {/* Score Panel (If Game Active) */}
+                <div className="mt-6 flex items-center gap-6 animate-in slide-in-from-top-4 duration-700">
+                    <div className="bg-white/10 backdrop-blur-md rounded-2xl p-4 border border-white/20 flex-1">
+                        <div className="text-emerald-100 text-xs font-bold uppercase tracking-wider mb-1">Game Score</div>
+                        <div className="text-4xl font-black">{liveScore}</div>
+                    </div>
+                    <div className="bg-white/10 backdrop-blur-md rounded-2xl p-4 border border-white/20 flex-1">
+                        <div className="text-emerald-100 text-xs font-bold uppercase tracking-wider mb-1">Active Rules</div>
+                        <div className="text-xl font-bold">Rule-Based Active</div>
+                    </div>
+                </div>
+
                 {/* Decoration */}
                 <div className="absolute top-0 right-0 w-64 h-64 bg-emerald-500/30 rounded-full blur-3xl -translate-y-1/2 translate-x-1/2" />
             </div>
 
             {/* Live Video Feed */}
             <div className="bg-white rounded-3xl border border-emerald-100 p-8 shadow-sm flex flex-col items-center">
-                {status === 'Running' && !streamError ? (
+                {status === 'Running' && countdown === -1 && !streamError ? (
                     <div className="w-full max-w-4xl relative rounded-2xl overflow-hidden shadow-lg border-4 border-emerald-500/20 bg-black aspect-video flex items-center justify-center">
                         <img
                             src={`http://127.0.0.1:8080/video_feed?t=${Date.now()}`}
@@ -113,8 +162,25 @@ export default function LiveDetection() {
                             </div>
                         ) : (
                             <>
-                                <Activity className="w-12 h-12 mb-4 animate-bounce text-emerald-500" />
-                                <p className="animate-pulse">{status}</p>
+                                {countdown !== null && countdown > 0 ? (
+                                    <div className="text-center">
+                                        <div className="text-8xl font-black text-emerald-500 animate-pulse mb-4">
+                                            {countdown}
+                                        </div>
+                                        <p className="text-xl font-bold text-gray-700">Prepare for Detection...</p>
+                                    </div>
+                                ) : countdown === 0 ? (
+                                     <div className="text-center">
+                                         <div className="text-8xl font-black text-emerald-600 animate-bounce mb-4">
+                                             GO!
+                                         </div>
+                                     </div>
+                                ) : (
+                                    <>
+                                        <Activity className="w-12 h-12 mb-4 animate-bounce text-emerald-500" />
+                                        <p className="animate-pulse">{status}</p>
+                                    </>
+                                )}
                             </>
                         )}
                     </div>

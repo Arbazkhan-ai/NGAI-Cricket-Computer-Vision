@@ -1,8 +1,8 @@
 
-import { Camera, Video, Image as ImageIcon, Smartphone, MonitorPlay, UploadCloud, Loader2 } from 'lucide-react';
+import { Camera, Video, Image as ImageIcon, Smartphone, MonitorPlay, UploadCloud, Loader2, Bot, Activity, Zap, Target } from 'lucide-react';
 import { useState, useRef, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { analyzeImage, type DetectionResult } from '../services/api';
+import { analyzeImage, analyzeVideo, type DetectionResult } from '../services/api';
 
 
 
@@ -27,6 +27,7 @@ export default function DetectionSource() {
 
     const [useCustomUrl, setUseCustomUrl] = useState(false);
 
+
     // Shot Names
     const SHOT_NAMES: Record<number, string> = {
         0: 'Sweep',
@@ -48,6 +49,7 @@ export default function DetectionSource() {
         detections: DetectionResult[],
         element: HTMLVideoElement | HTMLImageElement
     ) => {
+        if (selectedMethod === 'video') return; // Hide all labels/boxes for video upload
         const naturalWidth = element instanceof HTMLVideoElement ? element.videoWidth : element.naturalWidth;
         const naturalHeight = element instanceof HTMLVideoElement ? element.videoHeight : element.naturalHeight;
 
@@ -129,7 +131,7 @@ export default function DetectionSource() {
     };
 
     const processVideoFrame = async () => {
-        if (!videoRef.current || !canvasRef.current || videoRef.current.paused || videoRef.current.ended) return;
+        if (!videoRef.current || !canvasRef.current || videoRef.current.paused || videoRef.current.ended || selectedMethod === 'video') return;
 
         const video = videoRef.current;
         const canvas = canvasRef.current;
@@ -180,6 +182,7 @@ export default function DetectionSource() {
         if (!file) return;
 
         setAnalysisResult(null);
+        setPreviewUrl(null); // Clear old preview
         setIsAnalyzing(true);
 
         try {
@@ -193,9 +196,27 @@ export default function DetectionSource() {
                     setAnalysisResult(response.data.map(mapDetection));
                 }
             } else if (selectedMethod === 'video') {
-                // For video, we show local preview and start live detection on play
-                const url = URL.createObjectURL(file);
-                setPreviewUrl(url);
+                // Show local preview immediately
+                const localUrl = URL.createObjectURL(file);
+                setPreviewUrl(localUrl);
+                
+                // Clear previous results and show loader
+                setAnalysisResult(null);
+                setIsAnalyzing(true);
+                
+                try {
+                    // Server-side batch processing
+                    const response = await analyzeVideo(file, 'mediapipe');
+                    if (response.video_url) {
+                        // Update preview to the processed version
+                        setPreviewUrl(`http://localhost:3000${response.video_url}`);
+                    }
+                } catch (err) {
+                    console.error('Video processing failed', err);
+                    alert('Video processing failed. Check backend console.');
+                } finally {
+                    setIsAnalyzing(false);
+                }
             }
         } catch (error) {
             console.error('Analysis failed', error);
@@ -217,6 +238,13 @@ export default function DetectionSource() {
         }
     }, [analysisResult, selectedMethod]);
 
+    // Force video reload when previewUrl changes
+    useEffect(() => {
+        if (videoRef.current) {
+            videoRef.current.load();
+        }
+    }, [previewUrl]);
+
     const triggerFileInput = () => {
         fileInputRef.current?.click();
     };
@@ -229,52 +257,43 @@ export default function DetectionSource() {
                 <p className="text-emerald-50 opacity-90 font-medium">Choose your input method for shot detection</p>
             </div>
 
-            {/* Input Methods */}
-            <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
+            {/* Method Selection */}
+            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4 lg:gap-6">
                 {[
-                    { id: 'live', title: 'Live Camera', desc: 'Real-Time Detection', icon: Camera },
-                    { id: 'video', title: 'Video Upload', desc: 'Batch Processing', icon: Video },
-                    { id: 'image', title: 'Image', desc: 'Single Frame', icon: ImageIcon },
+                    { id: 'live', name: 'Live Camera', desc: 'Real-time detection from your webcam or mobile camera', icon: Camera, color: 'emerald' },
+                    { id: 'video', name: 'Video Upload', desc: 'Batch process recorded match footage with physics stats', icon: Video, color: 'blue' },
+                    { id: 'image', name: 'Static Image', desc: 'Analyze batting stance and form from single photos', icon: ImageIcon, color: 'violet' },
                 ].map((method) => (
-                    <div
+                    <button
                         key={method.id}
                         onClick={() => {
                             setSelectedMethod(method.id);
                             setPreviewUrl(null);
-
                             setAnalysisResult(null);
                         }}
                         className={`
-                            relative bg-white p-8 rounded-3xl border transition-all cursor-pointer group flex flex-col items-center justify-center text-center gap-4 h-48
+                            relative p-4 lg:p-6 rounded-[2rem] border-2 transition-all duration-300 text-left group overflow-hidden
                             ${selectedMethod === method.id
-                                ? 'border-emerald-500 shadow-lg shadow-emerald-100 ring-4 ring-emerald-50'
-                                : 'border-emerald-100 hover:border-emerald-300 hover:shadow-md'
+                                ? 'bg-emerald-500 border-emerald-500 text-white shadow-xl shadow-emerald-100'
+                                : 'bg-white border-gray-100 text-gray-500 hover:border-gray-200'
                             }
                         `}
                     >
-                        <div className={`
-                            p-4 rounded-2xl transition-colors
-                            ${selectedMethod === method.id ? 'bg-emerald-500 text-white' : 'bg-emerald-50 text-emerald-600 group-hover:bg-emerald-500 group-hover:text-white'}
-                        `}>
-                            <method.icon className="w-8 h-8" />
+                        <div className={`p-3 rounded-2xl w-fit ${selectedMethod === method.id ? 'bg-white/20' : 'bg-gray-50'}`}>
+                            <method.icon className="w-6 h-6" />
                         </div>
-                        <div>
-                            <h3 className={`font-bold text-lg mb-1 ${selectedMethod === method.id ? 'text-emerald-900' : 'text-gray-700'}`}>
-                                {method.title}
-                            </h3>
-                            <p className="text-xs text-emerald-600/70 font-medium uppercase tracking-wide">{method.desc}</p>
+                        <div className="mt-4">
+                            <h3 className="font-bold text-lg">{method.name}</h3>
+                            <p className={`text-sm mt-1 ${selectedMethod === method.id ? 'text-white/80' : 'text-gray-400'}`}>
+                                {method.desc}
+                            </p>
                         </div>
-                    </div>
+                    </button>
                 ))}
             </div>
 
             {/* Content Section based on Selection */}
-            <div className={`
-                border border-emerald-200 rounded-3xl p-8 transition-all duration-500 bg-emerald-50/30
-            `}>
-
-
-
+            <div className="border border-emerald-200 rounded-3xl p-4 lg:p-8 transition-all duration-500 bg-emerald-50/30">
                 {selectedMethod === 'live' && (
                     <div className="animate-in fade-in slide-in-from-bottom-4 duration-500">
                         <h3 className="text-gray-700 font-bold mb-6">Select Camera Type</h3>
@@ -289,10 +308,10 @@ export default function DetectionSource() {
                                     key={type.id}
                                     onClick={() => setSelectedCameraType(type.id)}
                                     className={`
-                                        bg-white p-6 rounded-2xl border transition-all cursor-pointer flex flex-col items-center gap-4 py-8
+                                        p-6 rounded-2xl border transition-all cursor-pointer flex flex-col items-center gap-4 py-8
                                         ${selectedCameraType === type.id
-                                            ? 'border-emerald-500 ring-2 ring-emerald-500/20 shadow-md'
-                                            : 'border-emerald-100 hover:border-emerald-300'
+                                            ? 'border-emerald-500 bg-emerald-50 ring-2 ring-emerald-500/20 shadow-md'
+                                            : 'bg-white border-emerald-100 hover:border-emerald-300'
                                         }
                                     `}
                                 >
@@ -328,11 +347,8 @@ export default function DetectionSource() {
                                         placeholder="http://192.168.1.5:8080/video or rtsp://..."
                                         value={ipAddress}
                                         onChange={(e) => setIpAddress(e.target.value)}
-                                        className="border border-emerald-200 rounded-xl p-3 focus:outline-none focus:ring-2 focus:ring-emerald-500 w-full"
+                                        className="border border-emerald-200 rounded-xl p-3 focus:outline-none focus:ring-2 focus:ring-emerald-500 w-full bg-white"
                                     />
-                                    <p className="text-xs text-gray-500">
-                                        Enter the exact URL provided by your IP camera app (supports http, https, rtsp).
-                                    </p>
                                 </div>
                             </div>
                         ) : (
@@ -344,7 +360,7 @@ export default function DetectionSource() {
                                         placeholder="192.168.1.x"
                                         value={ipAddress}
                                         onChange={(e) => setIpAddress(e.target.value)}
-                                        className="border border-emerald-200 rounded-xl p-3 focus:outline-none focus:ring-2 focus:ring-emerald-500"
+                                        className="border border-emerald-200 rounded-xl p-3 focus:outline-none focus:ring-2 focus:ring-emerald-500 bg-white"
                                     />
                                 </div>
                                 <div className="flex flex-col gap-2">
@@ -354,7 +370,7 @@ export default function DetectionSource() {
                                         placeholder="8080"
                                         value={port}
                                         onChange={(e) => setPort(e.target.value)}
-                                        className="border border-emerald-200 rounded-xl p-3 focus:outline-none focus:ring-2 focus:ring-emerald-500"
+                                        className="border border-emerald-200 rounded-xl p-3 focus:outline-none focus:ring-2 focus:ring-emerald-500 bg-white"
                                     />
                                 </div>
                             </div>
@@ -392,9 +408,9 @@ export default function DetectionSource() {
                         <div
                             onClick={!isAnalyzing ? triggerFileInput : undefined}
                             className={`
-                                w-full max-w-2xl border-2 border-dashed border-emerald-300 rounded-3xl p-12 flex flex-col items-center justify-center 
-                                ${!isAnalyzing ? 'bg-white/50 hover:bg-white/80 cursor-pointer' : 'bg-gray-50 cursor-wait'} 
-                                transition-colors group
+                                w-full max-w-2xl border-2 border-dashed border-emerald-300 rounded-[2.5rem] p-8 lg:p-12 flex flex-col items-center justify-center 
+                                ${!isAnalyzing ? 'bg-emerald-50/50 hover:bg-emerald-100/50 cursor-pointer shadow-inner' : 'bg-gray-100 cursor-wait'} 
+                                transition-all duration-300 group relative overflow-hidden
                             `}
                         >
                             <input
@@ -406,43 +422,32 @@ export default function DetectionSource() {
                                 disabled={isAnalyzing}
                             />
 
-                            {/* PREVIEW AREA */}
-
-                            {/* 1. Image Result */}
-                            {previewUrl && selectedMethod === 'image' && (
+                            {/* Preview Area */}
+                            {previewUrl && (
                                 <div className="mb-6 flex justify-center w-full">
-                                    <div className="relative inline-block">
-                                        <img
-                                            ref={imageRef}
-                                            src={previewUrl}
-                                            alt="Preview"
-                                            className="max-h-[60vh] max-w-full h-auto rounded-lg shadow-md block"
-                                            onLoad={() => {
-                                                if (analysisResult && overlayRef.current && imageRef.current) {
-                                                    const ctx = overlayRef.current.getContext('2d');
-                                                    if (ctx) drawDetections(ctx, analysisResult, imageRef.current);
-                                                }
-                                            }}
-                                        />
-                                        <canvas
-                                            ref={overlayRef}
-                                            className="absolute inset-0 w-full h-full pointer-events-none"
-                                        />
-                                    </div>
-                                </div>
-                            )}
-
-                            {/* 2. Video Preview with Live Detection */}
-                            {previewUrl && selectedMethod === 'video' && (
-                                <div className="mb-6 flex justify-center w-full">
-                                    <div className="relative inline-block">
-                                        <video
-                                            ref={videoRef}
-                                            src={previewUrl}
-                                            controls
-                                            className="max-h-[60vh] max-w-full h-auto rounded-lg shadow-md block"
-                                            onPlay={() => processVideoFrame()}
-                                        />
+                                    <div className="relative inline-block max-w-full">
+                                        {selectedMethod === 'image' ? (
+                                            <img
+                                                ref={imageRef}
+                                                src={previewUrl}
+                                                alt="Preview"
+                                                className="max-h-[60vh] rounded-lg shadow-md block"
+                                                onLoad={() => {
+                                                    if (analysisResult && overlayRef.current && imageRef.current) {
+                                                        const ctx = overlayRef.current.getContext('2d');
+                                                        if (ctx) drawDetections(ctx, analysisResult, imageRef.current);
+                                                    }
+                                                }}
+                                            />
+                                        ) : (
+                                            <video
+                                                ref={videoRef}
+                                                src={previewUrl}
+                                                controls
+                                                className="max-h-[60vh] rounded-lg shadow-md block"
+                                                onPlay={() => processVideoFrame()}
+                                            />
+                                        )}
                                         <canvas
                                             ref={overlayRef}
                                             className="absolute inset-0 w-full h-full pointer-events-none"
@@ -452,74 +457,56 @@ export default function DetectionSource() {
                                 </div>
                             )}
 
-                            {/* Loading State */}
+                            {/* Loading / Empty State */}
                             {isAnalyzing ? (
                                 <div className="flex flex-col items-center text-emerald-600">
                                     <Loader2 className="w-12 h-12 animate-spin mb-4" />
                                     <h3 className="text-xl font-bold">Processing...</h3>
-                                    <p className="text-sm opacity-70">
-                                        Running {selectedMethod === 'image' ? 'YOLO' : 'MediaPipe'} model...
-                                    </p>
+                                    <p className="text-sm opacity-70">Running AI Models...</p>
                                 </div>
                             ) : (
                                 !previewUrl && (
-                                    <>
-                                        <div className="bg-emerald-100 p-4 rounded-full mb-4 group-hover:scale-110 transition-transform">
+                                    <div className="text-center">
+                                        <div className="bg-emerald-100 p-4 rounded-full mb-4 w-fit mx-auto group-hover:scale-110 transition-transform">
                                             <UploadCloud className="w-8 h-8 text-emerald-600" />
                                         </div>
-
                                         <h3 className="text-xl font-bold text-gray-800 mb-2">
-                                            {selectedMethod === 'video' ? 'Upload Video File' : 'Upload Image File'}
+                                            Upload {selectedMethod === 'video' ? 'Video' : 'Image'}
                                         </h3>
-                                        <p className="text-gray-500 text-center text-sm mb-6 max-w-sm">
-                                            {selectedMethod === 'video'
-                                                ? 'Upload your cricket match video for live analysis.'
-                                                : 'Drag and drop your image here, or click to browse.'
-                                            }
+                                        <p className="text-gray-500 text-sm mb-6 max-w-sm">
+                                            Click to browse or drag and drop your file here.
                                         </p>
-                                        <button className="bg-emerald-500 hover:bg-emerald-600 text-white px-8 py-3 rounded-xl font-bold transition-all shadow-lg shadow-emerald-200 active:scale-95">
+                                        <button className="bg-emerald-500 text-white px-8 py-3 rounded-xl font-bold">
                                             Browse Files
                                         </button>
-                                    </>
+                                    </div>
                                 )
                             )}
 
-                            {/* Reset Button if showing result */}
-                            {((previewUrl && !isAnalyzing)) && (
+                            {previewUrl && !isAnalyzing && (
                                 <button
-                                    onClick={(e) => {
-                                        e.stopPropagation();
-                                        setPreviewUrl(null);
-                                        setAnalysisResult(null);
-                                    }}
+                                    onClick={(e) => { e.stopPropagation(); setPreviewUrl(null); setAnalysisResult(null); }}
                                     className="mt-6 text-emerald-600 font-semibold hover:underline"
                                 >
-                                    Analyze Another
+                                    Try Another File
                                 </button>
                             )}
-
                         </div>
 
-                        {/* Classification Results */}
-                        {analysisResult && analysisResult.length > 0 && (selectedMethod === 'image' || selectedMethod === 'video') && (
+                        {/* Results */}
+                        {analysisResult && analysisResult.length > 0 && (
                             <div className="mt-8 w-full max-w-2xl bg-white p-6 rounded-2xl border border-emerald-100 shadow-sm text-center">
-                                <h3 className="font-bold text-emerald-800 mb-2">Detected Shot</h3>
-                                <div className="text-3xl font-bold text-gray-800">
-                                    {analysisResult[0].class_name || 'Unknown Shot'}
+                                <h3 className="font-bold text-emerald-800 mb-2 uppercase text-xs tracking-widest">Analysis Result</h3>
+                                <div className="text-3xl font-black text-gray-900">
+                                    {analysisResult[0].class_name || 'Unknown'}
                                 </div>
                                 <div className="text-sm text-emerald-600 font-bold mt-1">
-                                    Confidence: {(analysisResult[0].conf * 100).toFixed(0)}%
-                                </div>
-                                <div className="text-xs text-gray-400 mt-2 uppercase tracking-wide">
-                                    Model: {analysisResult[0].model || (selectedMethod === 'image' ? 'YOLO' : 'MediaPipe')}
+                                    {(analysisResult[0].conf * 100).toFixed(0)}% Confidence
                                 </div>
                             </div>
                         )}
-
-
                     </div>
                 )}
-
             </div>
         </div>
     );

@@ -11,12 +11,20 @@ const db = new sqlite3.Database(dbPath, (err) => {
   }
 });
 
-// Create table for storing detection results
+// Create tables
 db.serialize(() => {
   db.run(`CREATE TABLE IF NOT EXISTS detections (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     image_path TEXT,
     results TEXT,
+    timestamp DATETIME DEFAULT CURRENT_TIMESTAMP
+  )`);
+
+  db.run(`CREATE TABLE IF NOT EXISTS matches (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    score INTEGER,
+    shots_count INTEGER,
+    duration TEXT,
     timestamp DATETIME DEFAULT CURRENT_TIMESTAMP
   )`);
 

@@ -209,16 +209,27 @@ app.post('/api/analyze-video', upload.single('video'), async (req, res) => {
             // Assuming server is running on same host, we just return the relative path or full URL
             // Since we serve /uploads, the URL is /uploads/filename
             const processedUrl = `/uploads/${filename}`;
-            res.json({
-                message: 'Video processing complete',
-                video_url: processedUrl
+            
+            // Save to Database
+            const results = JSON.stringify([{ class_name: 'Video Analysis', conf: 1.0, type: 'video' }]);
+            const stmt = db.prepare("INSERT INTO detections (image_path, results) VALUES (?, ?)");
+            stmt.run(processedUrl, results, function (err) {
+                if (err) console.error("DB Error (Video):", err.message);
+                
+                res.json({
+                    message: 'Video processing complete',
+                    video_url: processedUrl,
+                    db_id: this ? this.lastID : 0
+                });
             });
+            stmt.finalize();
         } else {
             console.error(`Video processing failed with code ${code}`);
             res.status(500).json({ error: 'Video processing failed' });
         }
     });
 });
+
 
 app.get('/api/history', (req, res) => {
     db.all("SELECT * FROM detections ORDER BY timestamp DESC", [], (err, rows) => {
@@ -230,65 +241,88 @@ app.get('/api/history', (req, res) => {
     });
 });
 
-// Start Live Detection Process
-app.post('/api/start_live', (req, res) => {
-    const { ip, port, showLandmarks } = req.body;
+app.get('/api/matches', (req, res) => {
+    db.all("SELECT * FROM matches ORDER BY timestamp DESC", [], (err, rows) => {
+        if (err) return res.status(500).json({ error: err.message });
+        res.json(rows);
+    });
+});
 
-    // Kill existing process if running
-    if (liveProcess) {
-        try {
-            if (process.platform === 'win32') {
-                spawn('taskkill', ['/pid', liveProcess.pid, '/f', '/t']);
-            } else {
-                liveProcess.kill();
-            }
-            console.log('Killed previous live process');
-        } catch (e) {
-            console.error('Error killing process:', e);
-        }
-    }
+app.post('/api/save-match', (req, res) => {
+    const { score, shots_count, duration } = req.body;
+    const stmt = db.prepare("INSERT INTO matches (score, shots_count, duration) VALUES (?, ?, ?)");
+    stmt.run(score, shots_count, duration, function (err) {
+        if (err) return res.status(500).json({ error: err.message });
+        res.json({ id: this.lastID, message: 'Match saved successfully' });
+    });
+    stmt.finalize();
+});
 
+// Function to start the live detection background service
+function startLiveService() {
     const scriptPath = path.join(__dirname, 'live_inference.py');
-    const args = [scriptPath];
-
-    if (ip) {
-        args.push('--ip', ip);
-    }
-    if (port) {
-        args.push('--port', port);
-    }
-    args.push('--landmarks', showLandmarks ? 'true' : 'false');
+    console.log(`Starting Live Detection service...`);
 
     let exe = PYTHON_EXECUTABLE;
-    if (!fs.existsSync(exe)) {
-        exe = 'python';
-    }
-    console.log(`Starting Live Mode with: ${exe} ${args.join(' ')}`);
+    if (!fs.existsSync(exe)) exe = 'python';
 
-    liveProcess = spawn(exe, args);
+    liveProcess = spawn(exe, [scriptPath]);
 
-    liveProcess.stdout.on('data', (data) => {
-        console.log(`LIVE OUT: ${data}`);
-    });
-
+    liveProcess.stdout.on('data', (data) => console.log(`LIVE SERVICE: ${data}`));
     liveProcess.stderr.on('data', (data) => {
-        const output = data.toString();
-        // Flask logs requests to stderr, so we filter out successful requests and startup messages
-        if (output.includes('HIT') || output.includes('HTTP/1.1 200') || output.includes('Press CTRL+C') || output.includes('Running on')) {
-            // These are normal informational logs from Flask
-            // We can log them as info or omit them to reduce noise
-            // console.log(`LIVE INFO: ${output.trim()}`); 
-        } else {
-            console.error(`LIVE ERR: ${output}`);
-        }
+        const out = data.toString();
+        if (!out.includes('HTTP/1.1 200')) console.error(`LIVE SERVICE ERR: ${out}`);
     });
 
     liveProcess.on('close', (code) => {
-        console.log(`Live process exited with code ${code}`);
+        console.log(`Live service exited with code ${code}. Restarting in 2s...`);
         liveProcess = null;
+        setTimeout(startLiveService, 2000);
+    });
+}
+
+// Start both persistent services
+startPythonProcess();
+startLiveService();
+
+// ... (other endpoints)
+
+// Start Live Detection Connection
+app.post('/api/start_live', (req, res) => {
+    const { ip } = req.body;
+    const http = require('http');
+    
+    const postData = JSON.stringify({ ip });
+    const options = {
+        hostname: 'localhost',
+        port: 8080,
+        path: '/api/connect',
+        method: 'POST',
+        headers: {
+            'Content-Type': 'application/json',
+            'Content-Length': Buffer.byteLength(postData)
+        }
+    };
+
+    const request = http.request(options, (response) => {
+        let data = '';
+        response.on('data', (chunk) => { data += chunk; });
+        response.on('end', () => {
+            try {
+                res.json(JSON.parse(data));
+            } catch (e) {
+                res.status(500).json({ error: 'Invalid response from live service' });
+            }
+        });
     });
 
-    res.json({ message: 'Live detection started' });
+    request.on('error', (e) => {
+        console.error('Live service connection error:', e);
+        res.status(500).json({ error: 'Live service not running' });
+    });
+
+    request.write(postData);
+    request.end();
 });
 
 // Stop Live Detection Process
