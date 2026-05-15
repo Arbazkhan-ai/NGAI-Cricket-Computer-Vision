@@ -1,120 +1,58 @@
-
 # ⚡ Cricket Computer Vision Project Documentation
 
-Welcome to the comprehensive guide for the NGAI-Cricket Detection System. This document explains how the project works, how to run it, and how to modify it.
+Welcome to the comprehensive guide for the NGAI-Cricket Detection System. This document explains the new organized architecture, data flow, and maintenance steps.
 
-## 🏗️ Architecture Overview
+## 🏗️ Architecture Overview (Organized)
 
-The system consists of two main parts:
-1.  **Frontend (UI):** Built with **React + Vite + TypeScript**. It handles the user interface, camera feed, and visualizing detections.
-2.  **Backend (API & Logic):** Built with **Node.js + Express**. It manages the database, user authentication, and runs the **Python Computer Vision script**.
+The project is split into three main modules to ensure high performance and maintainability:
+
+1.  **Client (`/client`):** The Frontend. Built with React + Vite + TypeScript.
+2.  **Server (`/server`):** The Node.js Express Backend. Handles DB, Auth, and process orchestration.
+3.  **AI (`/ai`):** The Intelligence Layer. Contains Python scripts for YOLO and MediaPipe analysis.
 
 ### Data Flow
-1.  **Frontend** captures an image (or video frame) from the camera.
-2.  It sends this image to the **Backend** via a POST request (`/api/analyze`).
-3.  **Backend** temporarily saves the image and spawns a **Python process** (`inference.py`).
-4.  **Python Script** loads the AI model (YOLO), analyzes the image, and prints the result as JSON.
-5.  **Backend** captures this JSON output, saves it to the **SQLite database**, and sends it back to the **Frontend**.
-6.  **Frontend** displays the detection result (shot type, confidence) to the user.
+1.  **Client** captures a frame from the webcam.
+2.  It sends the image to the **Server** (`/api/analyze`).
+3.  **Server** saves it to `/shared/uploads` and communicates with the persistent **AI Process** (`ai/inference.py`).
+4.  **AI Process** analyzes the image using YOLOv8/MediaPipe and returns JSON.
+5.  **Server** saves results to **MySQL** and sends them back to the **Client**.
 
 ---
 
-## 🚀 How to Run the Project
+## 🚀 Reorganized Folder Structure
 
-You need to run the **Backend** and **Frontend** in two separate terminals.
-
-### 1. Start the Backend
-This server runs on port 3000 and handles all logic.
-```powershell
-cd "d:\Full Webdevelopment\Front-End\backend"
-npm start
-```
-*You will see: "Server running on http://localhost:3000"*
-
-### 2. Start the Frontend
-This is the website accessible in your browser (usually port 5173).
-```powershell
-cd "d:\Full Webdevelopment\Front-End"
-npm run dev
-```
-*You will see: "Local: http://localhost:5173/"*
+| Folder | Purpose |
+| :--- | :--- |
+| `client/` | Frontend source code, assets, and React components. |
+| `server/` | Express routes, middleware, and MySQL database configuration. |
+| `ai/` | Main Python inference scripts (`live_inference.py`, `inference.py`). |
+| `ai/api/` | FastAPI version of the detection engine. |
+| `ai/models/` | **Storage for AI Weights** (`.pt`, `.onnx`, `.keras`). |
+| `shared/uploads/` | Centralized folder for all uploaded media and processed outputs. |
 
 ---
 
-## 📝 How to Make Changes
+## 📝 Maintenance & Modifications
 
-### 🎨 Frontend Changes (UI & Design)
-All frontend code is in `d:\Full Webdevelopment\Front-End\src`.
+### Adding a New Model
+1.  Place your new `.pt` or `.onnx` file in `ai/models/`.
+2.  Update the path in `ai/live_inference.py` or `ai/api/main.py`.
 
-*   **Pages:** Located in `src/pages`.
-    *   `Home.tsx`: The main dashboard with the camera feed.
-    *   `LandingPage.tsx`: The first page users see.
-    *   `Login.tsx` / `Signup.tsx`: Authentication pages.
-*   **Structure:**
-    *   `App.tsx`: Controls routing (which page shows for which URL).
-    *   `components/`: Reusable parts like the Sidebar or Layout.
-*   **Styling:**
-    *   Uses **Tailwind CSS**. You can change classes mostly directly in the HTML elements (e.g., `className="bg-red-500"`).
+### Changing the Design
+1.  Modify components in `client/src/pages` or `client/src/components`.
+2.  Styles are managed via Tailwind CSS.
 
-**Example: Changing the Dashboard Title**
-1.  Open `src/pages/Home.tsx`.
-2.  Find the text (e.g., "Detection Source").
-3.  Change it and save. The browser updates **instantly**.
-
-### ⚙️ Backend Changes (API & Database)
-All backend code is in `d:\Full Webdevelopment\Front-End\backend`.
-
-*   **API Logic:** `server.js` contains all the endpoints (routes).
-    *   `/api/analyze`: Handles image analysis.
-    *   `/api/login`: Handles user login.
-*   **Database:** `database.js` sets up the SQLite database tables.
-*   **AI Integration:** `inference.py` (simulated or real) is called by `server.js`.
-
-**Example: Adding a New API Endpoint**
-1.  Open `backend/server.js`.
-2.  Add a new route:
-    ```javascript
-    app.get('/api/test', (req, res) => {
-        res.json({ message: "Hello from backend!" });
-    });
-    ```
-3.  **Restart the backend terminal** (Ctrl+C, then `npm start`) to apply changes.
-
-### 🧠 AI Model Changes
-*   The Python script is located at `backend/inference.py`.
-*   The backend runs this script using `child_process.spawn`.
-*   To change the model, modify `inference.py` to load your specific `.pt` file or logic.
+### Database Updates
+1.  To change tables, modify `server/database.js`.
+2.  The system uses **MySQL**. Ensure the MySQL service is running before starting the server.
 
 ---
 
-## 🔄 What Happens After a Change?
+## ❓ FAQ & Troubleshooting
 
-1.  **Frontend:**
-    *   The **Vite** server watches your files.
-    *   When you save `Home.tsx`, it recompiles *only* that file and refreshes your browser automatically (Hot Module Replacement).
-    *   **No restart needed.**
-
-2.  **Backend:**
-    *   Node.js does **not** auto-restart by default.
-    *   After changing `server.js`, you must **stop** the server (Ctrl+C) and run `npm start` again.
+- **Server Error on Login?** Ensure MySQL is running. If it's a fresh install, remember to Sign Up before trying to Log In.
+- **Mirroring Issue?** Fixed. The system now automatically flips frames horizontally in both the live stream and the prediction API.
+- **Paths?** All paths in `server.js` and `live_inference.py` have been updated to be relative to the new folder structure.
 
 ---
-
-## 📂 Key Files Reference
-
-| File | Location | Purpose |
-|------|----------|---------|
-| `App.tsx` | Front-End/src | Main Router configuration. |
-| `api.ts` | Front-End/src/services | Functions to call the Backend API. |
-| `server.js` | Front-End/backend | Main backend application file. |
-| `inference.py` | Front-End/backend | Python script for AI detection. |
-| `cricket.db` | Front-End/backend | SQLite database file storing users and history. |
-
----
-
-## ❓ Common Issues
-
-*   **"Network Request Failed"**: Ensure the Backend is running on port 3000.
-*   **"Camera Not Found"**: Check browser permissions or close other apps using the camera (Zoom/Teams).
-*   **"Login Failed"**: Check if `cricket.db` exists in the backend folder. If corrupted, delete it and restart backend to recreate it.
-
+*Last Updated: May 15, 2026*
