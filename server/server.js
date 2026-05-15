@@ -67,7 +67,7 @@ const requestQueue = []; // Array of {resolve, reject} objects corresponding to 
 
 // Function to start the persistent Python process
 function startPythonProcess() {
-    const pythonScriptPath = path.join(__dirname, '..', 'ai', 'inference.py');
+    const pythonScriptPath = path.join(__dirname, '..', 'ai_engine', 'inference.py');
     console.log(`Starting Python inference service using: ${PYTHON_EXECUTABLE}`);
 
     // Check if venv python exists, else fall back to 'python'
@@ -187,7 +187,7 @@ app.post('/api/analyze-video', upload.single('video'), async (req, res) => {
     console.log(`Processing video: ${videoPath} with mode ${mode}`);
 
     // Call process_video.py
-    const scriptPath = path.join(__dirname, '..', 'ai', 'process_video.py');
+    const scriptPath = path.join(__dirname, '..', 'ai_engine', 'process_video.py');
     const args = [scriptPath, '--input', videoPath, '--output', outputPath, '--mode', mode];
 
     let exe = PYTHON_EXECUTABLE;

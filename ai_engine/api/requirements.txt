@@ -1,0 +1,10 @@
+fastapi
+uvicorn
+python-multipart
+mediapipe>=0.10.0
+protobuf>=4.21.0
+scikit-learn
+ultralytics
+numpy
+opencv-python
+pillow
