@@ -34,7 +34,7 @@ export const analyzeImage = async (file: File, mode: 'mediapipe' | 'yolo' = 'med
     return response.json();
 };
 
-export const analyzeVideo = async (file: File, mode: 'mediapipe' | 'yolo' = 'mediapipe'): Promise<{ message: string, video_url: string }> => {
+export const analyzeVideo = async (file: File, mode: string = 'mediapipe', onProgress?: (msg: string) => void): Promise<any> => {
     const formData = new FormData();
     formData.append('video', file);
     formData.append('mode', mode);
@@ -44,11 +44,40 @@ export const analyzeVideo = async (file: File, mode: 'mediapipe' | 'yolo' = 'med
         body: formData,
     });
 
-    if (!response.ok) {
-        throw new Error('Failed to analyze video');
+    if (!response.ok) throw new Error('Video analysis failed');
+
+    const reader = response.body?.getReader();
+    const decoder = new TextDecoder();
+    let finalResult = null;
+
+    while (reader) {
+        const { value, done } = await reader.read();
+        if (done) break;
+
+        const chunk = decoder.decode(value);
+        const lines = chunk.split('\n');
+
+        for (const line of lines) {
+            if (line.startsWith('data: ')) {
+                try {
+                    const data = JSON.parse(line.slice(6));
+                    if (data.progress && onProgress) {
+                        onProgress(data.progress);
+                    }
+                    if (data.video_url) {
+                        finalResult = data;
+                    }
+                    if (data.error) {
+                        throw new Error(data.error);
+                    }
+                } catch (e) {
+                    console.error("Error parsing SSE data", e);
+                }
+            }
+        }
     }
 
-    return response.json();
+    return finalResult;
 };
 
 // Auth

@@ -1,8 +1,32 @@
+# Large Model Weights
+models/detect/train/weights/best_shot.pt
+models/detect/train/weights/best.pt
+models/detect/train/weights/last.pt
+models/detect/train/weights/pitch.pt
+
+# Python Virtual Environment
 venv/
-__pycache__/
+.venv/
+env/
+scripts/
+
+# Uploaded Media and Debug
+shared/uploads/
+shared/debug_images/
+Web/model_data/
+ai/models/*.onnx
+ai/models/*.pt
+ai/models/*.keras
+
+# Node Modules
 node_modules/
-.env
-*.mp4
-Web/backend/uploads/
-Web/debug_images/
-Web/dist/
+client/node_modules/
+server/node_modules/
+
+# OS/IDE Files
+.DS_Store
+.vscode/
+.idea/
+*.log
+dist/
+build/

@@ -195,33 +195,57 @@ app.post('/api/analyze-video', upload.single('video'), async (req, res) => {
         exe = 'python';
     }
 
+    // Set headers for streaming progress
+    res.setHeader('Content-Type', 'text/event-stream');
+    res.setHeader('Cache-Control', 'no-cache');
+    res.setHeader('Connection', 'keep-alive');
+
+    let finalShotResult = null;
+
     const proc = spawn(exe, args);
 
-    proc.stdout.on('data', (data) => console.log(`VIDEO OUT: ${data}`));
+    proc.stdout.on('data', (data) => {
+        const message = data.toString().trim();
+        console.log(`VIDEO OUT: ${message}`);
+        
+        // Check for the final result line
+        if (message.includes('FINAL_RESULT:')) {
+            const parts = message.split('FINAL_RESULT:')[1].trim().split('|');
+            if (parts.length >= 2) {
+                finalShotResult = {
+                    class_name: parts[0],
+                    conf: parseFloat(parts[1])
+                };
+            }
+        }
+
+        // Stream the message to the frontend
+        res.write(`data: ${JSON.stringify({ progress: message })}\n\n`);
+    });
+
     proc.stderr.on('data', (data) => console.error(`VIDEO ERR: ${data}`));
 
     proc.on('close', (code) => {
         if (code === 0) {
-            // Success
-            // Return URL to the processed video
-            // Assuming server is running on same host, we just return the relative path or full URL
-            // Since we serve /uploads, the URL is /uploads/filename
             const processedUrl = `/uploads/${filename}`;
+            const resultsData = JSON.stringify(finalShotResult ? [finalShotResult] : [{ class_name: 'Analysis Complete', conf: 1.0, type: 'video' }]);
             
-            // Save to Database
-            const resultsData = JSON.stringify([{ class_name: 'Video Analysis', conf: 1.0, type: 'video' }]);
             db.query("INSERT INTO detections (image_path, results) VALUES (?, ?)", [processedUrl, resultsData], (err, results) => {
                 if (err) console.error("DB Error (Video):", err.message);
                 
-                res.json({
-                    message: 'Video processing complete',
-                    video_url: processedUrl,
-                    db_id: results ? results.insertId : 0
-                });
+                // Final success message with video URL and detection data
+                res.write(`data: ${JSON.stringify({ 
+                    message: 'Video processing complete', 
+                    video_url: processedUrl, 
+                    data: finalShotResult ? [finalShotResult] : null,
+                    db_id: results ? results.insertId : 0 
+                })}\n\n`);
+                res.end();
             });
         } else {
             console.error(`Video processing failed with code ${code}`);
-            res.status(500).json({ error: 'Video processing failed' });
+            res.write(`data: ${JSON.stringify({ error: 'Video processing failed' })}\n\n`);
+            res.end();
         }
     });
 });

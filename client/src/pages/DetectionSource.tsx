@@ -177,45 +177,41 @@ export default function DetectionSource() {
         }, 'image/jpeg', 0.6);
     };
 
+    const [analysisProgress, setAnalysisProgress] = useState<string>('');
+
     const handleFileChange = async (event: React.ChangeEvent<HTMLInputElement>) => {
         const file = event.target.files?.[0];
         if (!file) return;
 
         setAnalysisResult(null);
-        setPreviewUrl(null); // Clear old preview
+        setPreviewUrl(null);
+        const url = URL.createObjectURL(file);
+        setPreviewUrl(url);
+    };
+
+    const startAnalysis = async () => {
+        const file = fileInputRef.current?.files?.[0];
+        if (!file) return;
+
         setIsAnalyzing(true);
+        setAnalysisResult(null);
+        setAnalysisProgress('Starting AI Analysis...');
 
         try {
             if (selectedMethod === 'image') {
-                // Preview for Image
-                const url = URL.createObjectURL(file);
-                setPreviewUrl(url); // Show local preview immediately
-
                 const response = await analyzeImage(file, 'yolo');
                 if (response.data) {
                     setAnalysisResult(response.data.map(mapDetection));
                 }
             } else if (selectedMethod === 'video') {
-                // Show local preview immediately
-                const localUrl = URL.createObjectURL(file);
-                setPreviewUrl(localUrl);
-                
-                // Clear previous results and show loader
-                setAnalysisResult(null);
-                setIsAnalyzing(true);
-                
-                try {
-                    // Server-side batch processing
-                    const response = await analyzeVideo(file, 'mediapipe');
-                    if (response.video_url) {
-                        // Update preview to the processed version
-                        setPreviewUrl(`http://localhost:3000${response.video_url}`);
+                const response = await analyzeVideo(file, 'mediapipe', (progress) => {
+                    setAnalysisProgress(progress);
+                });
+                if (response.video_url) {
+                    setPreviewUrl(`http://localhost:3000${response.video_url}`);
+                    if (response.data) {
+                        setAnalysisResult(response.data);
                     }
-                } catch (err) {
-                    console.error('Video processing failed', err);
-                    alert('Video processing failed. Check backend console.');
-                } finally {
-                    setIsAnalyzing(false);
                 }
             }
         } catch (error) {
@@ -223,6 +219,7 @@ export default function DetectionSource() {
             alert('Analysis failed. Check backend console.');
         } finally {
             setIsAnalyzing(false);
+            setAnalysisProgress('');
         }
     };
 
@@ -406,10 +403,10 @@ export default function DetectionSource() {
                 {(selectedMethod === 'video' || selectedMethod === 'image') && (
                     <div className="animate-in fade-in slide-in-from-bottom-4 duration-500 flex flex-col items-center justify-center py-8">
                         <div
-                            onClick={!isAnalyzing ? triggerFileInput : undefined}
+                            onClick={(!isAnalyzing && !previewUrl) ? triggerFileInput : undefined}
                             className={`
                                 w-full max-w-2xl border-2 border-dashed border-emerald-300 rounded-[2.5rem] p-8 lg:p-12 flex flex-col items-center justify-center 
-                                ${!isAnalyzing ? 'bg-emerald-50/50 hover:bg-emerald-100/50 cursor-pointer shadow-inner' : 'bg-gray-100 cursor-wait'} 
+                                ${(!isAnalyzing && !previewUrl) ? 'bg-emerald-50/50 hover:bg-emerald-100/50 cursor-pointer shadow-inner' : 'bg-white shadow-sm'} 
                                 transition-all duration-300 group relative overflow-hidden
                             `}
                         >
@@ -424,8 +421,8 @@ export default function DetectionSource() {
 
                             {/* Preview Area */}
                             {previewUrl && (
-                                <div className="mb-6 flex justify-center w-full">
-                                    <div className="relative inline-block max-w-full">
+                                <div className="relative w-full max-w-2xl mx-auto mb-8">
+                                    <div className="relative rounded-2xl overflow-hidden border-4 border-white shadow-2xl">
                                         {selectedMethod === 'image' ? (
                                             <img
                                                 ref={imageRef}
@@ -459,10 +456,19 @@ export default function DetectionSource() {
 
                             {/* Loading / Empty State */}
                             {isAnalyzing ? (
-                                <div className="flex flex-col items-center text-emerald-600">
+                                <div className="flex flex-col items-center text-emerald-600 w-full px-8">
                                     <Loader2 className="w-12 h-12 animate-spin mb-4" />
                                     <h3 className="text-xl font-bold">Processing...</h3>
-                                    <p className="text-sm opacity-70">Running AI Models...</p>
+                                    <p className="text-sm opacity-70 mb-6">Running AI Models...</p>
+                                    
+                                    {selectedMethod === 'video' && analysisProgress && (
+                                        <div className="w-full bg-emerald-100 rounded-full h-12 flex items-center justify-center relative overflow-hidden border border-emerald-200 shadow-inner">
+                                            <div className="absolute inset-0 bg-emerald-500/10 animate-pulse" />
+                                            <span className="relative z-10 font-mono text-emerald-800 font-bold">
+                                                {analysisProgress}
+                                            </span>
+                                        </div>
+                                    )}
                                 </div>
                             ) : (
                                 !previewUrl && (
@@ -474,22 +480,40 @@ export default function DetectionSource() {
                                             Upload {selectedMethod === 'video' ? 'Video' : 'Image'}
                                         </h3>
                                         <p className="text-gray-500 text-sm mb-6 max-w-sm">
-                                            Click to browse or drag and drop your file here.
+                                            Select your file to start the analysis process.
                                         </p>
-                                        <button className="bg-emerald-500 text-white px-8 py-3 rounded-xl font-bold">
-                                            Browse Files
+                                        <button 
+                                            onClick={(e) => { e.stopPropagation(); triggerFileInput(); }}
+                                            className="bg-emerald-500 text-white px-8 py-3 rounded-xl font-bold hover:bg-emerald-600 transition-all"
+                                        >
+                                            Select File
                                         </button>
                                     </div>
                                 )
                             )}
 
                             {previewUrl && !isAnalyzing && (
-                                <button
-                                    onClick={(e) => { e.stopPropagation(); setPreviewUrl(null); setAnalysisResult(null); }}
-                                    className="mt-6 text-emerald-600 font-semibold hover:underline"
-                                >
-                                    Try Another File
-                                </button>
+                                <div className="flex flex-col items-center gap-4 w-full">
+                                    <button
+                                        onClick={startAnalysis}
+                                        className="bg-emerald-600 text-white px-12 py-4 rounded-2xl font-black text-lg shadow-xl shadow-emerald-100 hover:scale-105 active:scale-95 transition-all flex items-center gap-3"
+                                    >
+                                        <Zap className="w-6 h-6 fill-white" />
+                                        <span>START AI ANALYSIS</span>
+                                    </button>
+                                    
+                                    <button
+                                        onClick={(e) => { 
+                                            e.stopPropagation(); 
+                                            setPreviewUrl(null); 
+                                            setAnalysisResult(null);
+                                            if (fileInputRef.current) fileInputRef.current.value = ''; // Reset memory
+                                        }}
+                                        className="text-gray-400 text-sm hover:text-emerald-600 transition-colors"
+                                    >
+                                        Choose Different File
+                                    </button>
+                                </div>
                             )}
                         </div>
 

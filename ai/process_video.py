@@ -241,10 +241,14 @@ def process_video(input_path, output_path, mode="mediapipe"):
         
         if ball_hit_bat and latched_shot_label:
             cv2.putText(frame, f"SHOT: {latched_shot_label} ({latched_shot_conf*100:.1f}%)", (30, 140), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 100), 2)
+            if frame_idx % 10 == 0:
+                print(f"SHOT_DETECTED: {latched_shot_label}", flush=True)
         
         out.write(frame)
 
     cap.release(); out.release()
+    if latched_shot_label:
+        print(f"FINAL_RESULT: {latched_shot_label}|{latched_shot_conf}", flush=True)
     print("Video processing complete."); return True
 
 if __name__ == "__main__":
