@@ -62,6 +62,8 @@ except Exception as e:
 camera = None
 connection_status = "Not Connected"
 current_ip = ""
+manual_pitch_pts = None
+show_landmarks_flag = False
 
 # Tracking State
 ball_track = []
@@ -94,9 +96,11 @@ def draw_trail(frame, track):
 
 @app.route('/api/connect', methods=['POST'])
 def connect_camera():
-    global camera, connection_status, current_ip, ball_track, ball_hit_bat, pose_buffer
+    global camera, connection_status, current_ip, ball_track, ball_hit_bat, pose_buffer, manual_pitch_pts, show_landmarks_flag
     data = request.json
     ip = data.get('ip', '')
+    manual_pitch_pts = data.get('manual_pitch', None)
+    show_landmarks_flag = data.get('showLandmarks', False)
     
     # Reset tracking state
     ball_track = []
@@ -134,7 +138,7 @@ def video_feed():
     return Response(generate_frames(), mimetype='multipart/x-mixed-replace; boundary=frame')
 
 def generate_frames():
-    global camera, ball_model, pitch_model, shot_model, scaler, classes, mp_drawing, pose, mp_pose, ball_track, frames_without_ball, ball_hit_bat, pose_buffer, latched_shot_label, latched_shot_conf, shot_display_countdown, connection_status, game_score, last_hit_frame, current_frame_idx
+    global camera, ball_model, pitch_model, shot_model, scaler, classes, mp_drawing, pose, mp_pose, ball_track, frames_without_ball, ball_hit_bat, pose_buffer, latched_shot_label, latched_shot_conf, shot_display_countdown, connection_status, game_score, last_hit_frame, current_frame_idx, manual_pitch_pts, current_ip, show_landmarks_flag
 
     while True:
         current_frame_idx += 1
@@ -148,27 +152,32 @@ def generate_frames():
                 connection_status = "Stream Interrupted"
                 camera.release(); camera = None; continue
 
-            # Flip frame horizontally to fix mirroring (Left -> Right, Right -> Left)
-            frame = cv2.flip(frame, 1)
-
             h, w = frame.shape[:2]
+            
+            # Keep original frame for AI processing
             annotated_frame = frame.copy()
             
-            # AI Inference
-            results_pitch = pitch_model.predict(frame, conf=0.5, verbose=False)
+            # AI Inference or Manual Pitch
             pitch_boxes = []
-            for res in results_pitch:
-                for box in res.boxes:
-                    if int(box.cls[0]) == 1:
-                        px1, py1, px2, py2 = box.xyxy[0].tolist()
-                        pitch_boxes.append((px1, py1, px2, py2))
-                        cv2.rectangle(annotated_frame, (int(px1), int(py1)), (int(px2), int(py2)), (0, 255, 0), 2)
+            if manual_pitch_pts and len(manual_pitch_pts) == 4:
+                xs = [p[0] for p in manual_pitch_pts]
+                ys = [p[1] for p in manual_pitch_pts]
+                px1, py1, px2, py2 = min(xs), min(ys), max(xs), max(ys)
+                pitch_boxes.append((px1, py1, px2, py2))
+            else:
+                results_pitch = pitch_model.predict(frame, conf=0.5, verbose=False)
+                for res in results_pitch:
+                    for box in res.boxes:
+                        if int(box.cls[0]) == 1:
+                            px1, py1, px2, py2 = box.xyxy[0].tolist()
+                            pitch_boxes.append((px1, py1, px2, py2))
 
             results_ball = ball_model(frame, verbose=False, conf=0.15)
             all_batsmen = []
             all_bats = []
             current_ball_box = None
             
+            # Just collect the boxes first
             for box in results_ball[0].boxes:
                 cls_id = int(box.cls[0])
                 cls_name = ball_model.names[cls_id].lower()
@@ -176,20 +185,17 @@ def generate_frames():
                 coords = map(int, box.xyxy[0].tolist())
                 x1, y1, x2, y2 = coords
                 
-                color = (0, 255, 0) if cls_name == 'batsman' else (255, 0, 0) if cls_name == 'ball' else (0, 0, 255)
-                cv2.rectangle(annotated_frame, (x1, y1), (x2, y2), color, 2)
-                cv2.putText(annotated_frame, f"{cls_name.upper()} {conf:.2f}", (x1, y1-10), cv2.FONT_HERSHEY_SIMPLEX, 0.5, color, 2)
-
-                if cls_name == 'batsman' or cls_id == 2: all_batsmen.append([x1, y1, x2, y2])
-                elif cls_name == 'ball' or cls_id == 0: current_ball_box = [x1, y1, x2, y2]
-                elif cls_name == 'bat' or cls_id == 1: all_bats.append([x1, y1, x2, y2])
+                if cls_name == 'batsman' or cls_id == 2: all_batsmen.append((x1, y1, x2, y2, cls_name, conf))
+                elif cls_name == 'ball' or cls_id == 0: current_ball_box = (x1, y1, x2, y2, cls_name, conf)
+                elif cls_name == 'bat' or cls_id == 1: all_bats.append((x1, y1, x2, y2, cls_name, conf))
 
             # Logic: Find Active Batsman
             batsman_box = None
             if all_batsmen:
                 for bman in all_batsmen:
                     cx, cy = (bman[0]+bman[2])//2, (bman[1]+bman[3])//2
-                    on_pitch = any(px1 <= cx <= px2 and py1 <= cy <= py2 for (px1, py1, px2, py2) in pitch_boxes)
+                    # Add a generous margin so manual pitches don't exclude the batsman
+                    on_pitch = True if not pitch_boxes else any((px1-200) <= cx <= (px2+200) and (py1-200) <= cy <= (py2+200) for (px1, py1, px2, py2) in pitch_boxes)
                     if not on_pitch: continue
                     
                     has_bat = any((bman[0]-20) <= (bat[0]+bat[2])//2 <= (bman[2]+20) and (bman[1]-20) <= (bat[1]+bat[3])//2 <= (bman[3]+20) for bat in all_bats)
@@ -200,8 +206,8 @@ def generate_frames():
             current_shot_conf = 0.0
 
             if batsman_box:
-                bx1, by1, bx2, by2 = map(int, batsman_box)
-                bx1, by1, bx2, by2 = max(0, bx1), max(0, by1), min(w, bx2), min(h, by2)
+                bx1, by1, bx2, by2, _, _ = batsman_box
+                bx1, by1, bx2, by2 = max(0, int(bx1)), max(0, int(by1)), min(w, int(bx2)), min(h, int(by2))
                 crop = frame[by1:by2, bx1:bx2]
                 if crop.size > 0:
                     res_pose = pose.process(cv2.cvtColor(crop, cv2.COLOR_BGR2RGB))
@@ -210,7 +216,11 @@ def generate_frames():
                         feat = []
                         for p in res_pose.pose_landmarks.landmark:
                             feat.extend([(p.x * cw + bx1)/w, (p.y * ch + by1)/h, p.z, p.visibility])
-                        mp_drawing.draw_landmarks(annotated_frame, res_pose.pose_landmarks, mp_pose.POSE_CONNECTIONS)
+                        
+                        if show_landmarks_flag:
+                            mp_drawing.draw_landmarks(crop, res_pose.pose_landmarks, mp_pose.POSE_CONNECTIONS)
+                            annotated_frame[by1:by2, bx1:bx2] = crop
+                            
                         pose_buffer.append(feat)
                         if len(pose_buffer) > SEQ_LEN: pose_buffer.pop(0)
                         if len(pose_buffer) == SEQ_LEN and shot_model:
@@ -223,11 +233,11 @@ def generate_frames():
                                 current_shot_label, current_shot_conf = classes[idx], float(preds[0][idx])
 
             if current_ball_box:
-                x1, y1, x2, y2 = current_ball_box
+                x1, y1, x2, y2, cls_name, conf = current_ball_box
                 cx, cy = int((x1+x2)/2), int((y1+y2)/2)
                 
-                # Pitch Constraint
-                near_pitch = any((pbox[0]-100) <= cx <= (pbox[2]+100) and (pbox[1]-100) <= cy <= (pbox[3]+100) for pbox in pitch_boxes)
+                # Pitch Constraint with generous margin
+                near_pitch = True if not pitch_boxes else any((pbox[0]-250) <= cx <= (pbox[2]+250) and (pbox[1]-250) <= cy <= (pbox[3]+250) for pbox in pitch_boxes)
                 if near_pitch:
                     ball_track.append((cx, cy))
                     frames_without_ball = 0
@@ -249,6 +259,17 @@ def generate_frames():
                     if current_shot_label != "Waiting...":
                         latched_shot_label, latched_shot_conf = current_shot_label, current_shot_conf
                         shot_display_countdown = SHOT_DISPLAY_FRAMES
+
+            # Draw Pitch
+            for (px1, py1, px2, py2) in pitch_boxes:
+                cv2.rectangle(annotated_frame, (int(px1), int(py1)), (int(px2), int(py2)), (0, 255, 0), 2)
+            
+            # Draw Balls, Batsmen, Bats
+            for item in all_batsmen + all_bats + ([current_ball_box] if current_ball_box else []):
+                bx1, by1, bx2, by2, cls_name, conf = item
+                color = (0, 255, 0) if cls_name == 'batsman' else (255, 0, 0) if cls_name == 'ball' else (0, 0, 255)
+                cv2.rectangle(annotated_frame, (int(bx1), int(by1)), (int(bx2), int(by2)), color, 2)
+                cv2.putText(annotated_frame, f"{cls_name.upper()} {conf:.2f}", (int(bx1), int(by1)-10), cv2.FONT_HERSHEY_SIMPLEX, 0.5, color, 2)
 
             # Trail & Physics
             annotated_frame = draw_trail(annotated_frame, ball_track)

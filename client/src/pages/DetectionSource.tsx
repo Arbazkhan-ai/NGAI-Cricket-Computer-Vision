@@ -2,7 +2,7 @@
 import { Camera, Video, Image as ImageIcon, Smartphone, MonitorPlay, UploadCloud, Loader2, Bot, Activity, Zap, Target } from 'lucide-react';
 import { useState, useRef, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { analyzeImage, analyzeVideo, type DetectionResult } from '../services/api';
+import { analyzeImage, analyzeVideo, analyzeLbwVideo, uploadVideoOnly, type DetectionResult } from '../services/api';
 
 
 
@@ -10,10 +10,14 @@ export default function DetectionSource() {
     const navigate = useNavigate();
     const [selectedMethod, setSelectedMethod] = useState<string>('live');
     const [selectedCameraType, setSelectedCameraType] = useState<string>('mobile');
+    const [analysisType, setAnalysisType] = useState<'shot' | 'lbw'>('shot');
 
     const [isAnalyzing, setIsAnalyzing] = useState(false);
     const [analysisResult, setAnalysisResult] = useState<any[] | null>(null);
     const [previewUrl, setPreviewUrl] = useState<string | null>(null);
+
+    const [isPitchSetup, setIsPitchSetup] = useState(false);
+    const [manualPitchPts, setManualPitchPts] = useState<{x: number, y: number}[]>([]);
 
     const [ipAddress, setIpAddress] = useState('');
     const [port, setPort] = useState('');
@@ -177,6 +181,51 @@ export default function DetectionSource() {
         }, 'image/jpeg', 0.6);
     };
 
+    const handleOverlayClick = (e: React.MouseEvent<HTMLCanvasElement>) => {
+        if (!isPitchSetup) return;
+        const canvas = overlayRef.current;
+        if (!canvas) return;
+        const rect = canvas.getBoundingClientRect();
+        
+        const scaleX = canvas.width / rect.width;
+        const scaleY = canvas.height / rect.height;
+        
+        const x = (e.clientX - rect.left) * scaleX;
+        const y = (e.clientY - rect.top) * scaleY;
+        
+        setManualPitchPts(prev => {
+            if (prev.length < 4) return [...prev, {x, y}];
+            return prev;
+        });
+    };
+
+    const confirmLbwSetup = async (isAuto: boolean) => {
+        const file = fileInputRef.current?.files?.[0];
+        if (!file) return;
+
+        setIsAnalyzing(true);
+        setAnalysisProgress('Uploading video...');
+        try {
+            const videoPath = await uploadVideoOnly(file);
+            const ptsArray = isAuto ? undefined : manualPitchPts.map(p => [Math.round(p.x), Math.round(p.y)]);
+            
+            navigate('/live', {
+                state: {
+                    ipAddress: videoPath,
+                    port: '',
+                    showLandmarks: showLandmarks,
+                    analysisType: analysisType,
+                    manualPitch: ptsArray
+                }
+            });
+        } catch (e) {
+            console.error(e);
+            alert('Upload failed');
+            setIsAnalyzing(false);
+            setAnalysisProgress('');
+        }
+    };
+
     const [analysisProgress, setAnalysisProgress] = useState<string>('');
 
     const handleFileChange = async (event: React.ChangeEvent<HTMLInputElement>) => {
@@ -185,6 +234,8 @@ export default function DetectionSource() {
 
         setAnalysisResult(null);
         setPreviewUrl(null);
+        setIsPitchSetup(false);
+        setManualPitchPts([]);
         const url = URL.createObjectURL(file);
         setPreviewUrl(url);
     };
@@ -192,6 +243,11 @@ export default function DetectionSource() {
     const startAnalysis = async () => {
         const file = fileInputRef.current?.files?.[0];
         if (!file) return;
+
+        if (selectedMethod === 'video') {
+            setIsPitchSetup(true);
+            return;
+        }
 
         setIsAnalyzing(true);
         setAnalysisResult(null);
@@ -204,7 +260,8 @@ export default function DetectionSource() {
                     setAnalysisResult(response.data.map(mapDetection));
                 }
             } else if (selectedMethod === 'video') {
-                const response = await analyzeVideo(file, 'mediapipe', (progress) => {
+                const apiCall = analysisType === 'lbw' ? analyzeLbwVideo : analyzeVideo;
+                const response = await apiCall(file, 'auto', (progress) => {
                     setAnalysisProgress(progress);
                 });
                 if (response.video_url) {
@@ -235,6 +292,51 @@ export default function DetectionSource() {
         }
     }, [analysisResult, selectedMethod]);
 
+    useEffect(() => {
+        if (isPitchSetup && overlayRef.current && videoRef.current) {
+            const canvas = overlayRef.current;
+            const video = videoRef.current;
+            
+            // For LBW, backend resizes to width=1000. We must match this.
+            // For Shot Detection, it uses original width.
+            const targetWidth = analysisType === 'lbw' ? 1000 : (video.videoWidth || 640);
+            const targetHeight = analysisType === 'lbw' 
+                ? (video.videoWidth > 0 ? (video.videoHeight * (1000 / video.videoWidth)) : 750)
+                : (video.videoHeight || 480);
+            
+            if (canvas.width !== targetWidth) {
+                canvas.width = targetWidth;
+                canvas.height = targetHeight;
+            }
+            const ctx = canvas.getContext('2d');
+            if (ctx) {
+                ctx.clearRect(0, 0, canvas.width, canvas.height);
+                ctx.fillStyle = 'yellow';
+                manualPitchPts.forEach((pt, idx) => {
+                    ctx.beginPath();
+                    ctx.arc(pt.x, pt.y, 6, 0, Math.PI * 2);
+                    ctx.fill();
+                    ctx.fillStyle = 'black';
+                    ctx.fillText(`${idx + 1}`, pt.x - 4, pt.y + 4);
+                    ctx.fillStyle = 'yellow';
+                });
+                if (manualPitchPts.length > 1) {
+                    ctx.strokeStyle = 'yellow';
+                    ctx.lineWidth = 2;
+                    ctx.beginPath();
+                    ctx.moveTo(manualPitchPts[0].x, manualPitchPts[0].y);
+                    for (let i=1; i<manualPitchPts.length; i++) {
+                        ctx.lineTo(manualPitchPts[i].x, manualPitchPts[i].y);
+                    }
+                    if (manualPitchPts.length === 4) {
+                        ctx.closePath();
+                    }
+                    ctx.stroke();
+                }
+            }
+        }
+    }, [manualPitchPts, isPitchSetup]);
+
     // Force video reload when previewUrl changes
     useEffect(() => {
         if (videoRef.current) {
@@ -246,12 +348,43 @@ export default function DetectionSource() {
         fileInputRef.current?.click();
     };
 
+    const handleAnalysisTypeChange = (type: 'shot' | 'lbw') => {
+        setAnalysisType(type);
+        setPreviewUrl(null);
+        setAnalysisResult(null);
+        setIsPitchSetup(false);
+        setManualPitchPts([]);
+        if (fileInputRef.current) fileInputRef.current.value = '';
+    };
+
     return (
         <div className="space-y-8 pb-8">
             {/* Header Banner */}
-            <div className="bg-emerald-500 rounded-3xl p-8 text-white shadow-lg shadow-emerald-200">
+            <div className="bg-emerald-500 rounded-3xl p-8 text-white shadow-lg shadow-emerald-200 mb-8">
                 <h1 className="text-2xl font-bold mb-2">Detection Source</h1>
                 <p className="text-emerald-50 opacity-90 font-medium">Choose your input method for shot detection</p>
+            </div>
+
+            {/* Analysis Type Toggle */}
+            <div className="flex justify-center mb-8">
+                <div className="bg-gray-100 p-1.5 rounded-2xl flex gap-2 w-full max-w-md shadow-inner">
+                    <button
+                        onClick={() => handleAnalysisTypeChange('shot')}
+                        className={`flex-1 py-3 px-6 rounded-xl font-bold transition-all ${
+                            analysisType === 'shot' ? 'bg-white text-emerald-600 shadow-md' : 'text-gray-500 hover:text-gray-700'
+                        }`}
+                    >
+                        Shot Detection
+                    </button>
+                    <button
+                        onClick={() => handleAnalysisTypeChange('lbw')}
+                        className={`flex-1 py-3 px-6 rounded-xl font-bold transition-all ${
+                            analysisType === 'lbw' ? 'bg-white text-emerald-600 shadow-md' : 'text-gray-500 hover:text-gray-700'
+                        }`}
+                    >
+                        LBW Analysis
+                    </button>
+                </div>
             </div>
 
             {/* Method Selection */}
@@ -389,12 +522,13 @@ export default function DetectionSource() {
                                     state: {
                                         ipAddress,
                                         port: useCustomUrl ? '' : port,
-                                        showLandmarks
+                                        showLandmarks,
+                                        analysisType
                                     }
                                 })}
                                 className="bg-emerald-500 hover:bg-emerald-600 text-white px-10 py-4 rounded-xl font-bold transition-all shadow-lg shadow-emerald-200 flex items-center gap-3 active:scale-95">
                                 <Camera className="w-5 h-5" />
-                                <span>Start Live Detection</span>
+                                <span>Start Live {analysisType === 'lbw' ? 'LBW' : 'Shot'} Detection</span>
                             </button>
                         </div>
                     </div>
@@ -447,9 +581,50 @@ export default function DetectionSource() {
                                         )}
                                         <canvas
                                             ref={overlayRef}
-                                            className="absolute inset-0 w-full h-full pointer-events-none"
+                                            onClick={handleOverlayClick}
+                                            className={`absolute inset-0 w-full h-full ${isPitchSetup ? 'z-10 pointer-events-auto cursor-crosshair' : 'pointer-events-none'}`}
                                         />
                                         <canvas ref={canvasRef} className="hidden" />
+                                    </div>
+                                </div>
+                            )}
+
+                            {/* Pitch Setup UI */}
+                            {isPitchSetup && (
+                                <div className="mt-2 w-full max-w-2xl bg-emerald-50 rounded-2xl p-6 border border-emerald-200 shadow-sm text-center mb-6">
+                                    <h4 className="font-bold text-emerald-800 text-lg mb-1">Pitch Setup</h4>
+                                    <p className="text-sm text-emerald-600 mb-4">Click 4 points on the video above to manually draw the pitch, or choose Auto Detect.</p>
+                                    
+                                    <div className="flex justify-center mb-6">
+                                        <label className="flex items-center gap-3 cursor-pointer group">
+                                            <div className={`w-12 h-6 rounded-full p-1 transition-colors ${showLandmarks ? 'bg-emerald-500' : 'bg-gray-300'}`}
+                                                onClick={(e) => { e.stopPropagation(); setShowLandmarks(!showLandmarks); }}>
+                                                <div className={`bg-white w-4 h-4 rounded-full shadow-md transform transition-transform ${showLandmarks ? 'translate-x-6' : ''}`} />
+                                            </div>
+                                            <span className="font-semibold text-gray-700 group-hover:text-emerald-600 transition-colors">Show Pose Landmarks</span>
+                                        </label>
+                                    </div>
+
+                                    <div className="flex flex-wrap gap-4 justify-center">
+                                        <button 
+                                            onClick={(e) => { e.stopPropagation(); setManualPitchPts([]); }} 
+                                            className="px-6 py-2 bg-gray-200 text-gray-700 font-bold rounded-xl hover:bg-gray-300 transition-colors"
+                                        >
+                                            Clear Points
+                                        </button>
+                                        <button 
+                                            onClick={(e) => { e.stopPropagation(); confirmLbwSetup(true); }} 
+                                            className="px-6 py-2 bg-blue-500 text-white font-bold rounded-xl hover:bg-blue-600 transition-colors shadow-md shadow-blue-200"
+                                        >
+                                            Auto Detect Pitch
+                                        </button>
+                                        <button 
+                                            onClick={(e) => { e.stopPropagation(); confirmLbwSetup(false); }} 
+                                            disabled={manualPitchPts.length !== 4} 
+                                            className="px-6 py-2 bg-emerald-600 text-white font-bold rounded-xl hover:bg-emerald-700 transition-colors disabled:opacity-50 disabled:cursor-not-allowed shadow-md shadow-emerald-200"
+                                        >
+                                            Start with Custom Pitch
+                                        </button>
                                     </div>
                                 </div>
                             )}
@@ -492,7 +667,7 @@ export default function DetectionSource() {
                                 )
                             )}
 
-                            {previewUrl && !isAnalyzing && (
+                            {previewUrl && !isAnalyzing && !isPitchSetup && (
                                 <div className="flex flex-col items-center gap-4 w-full">
                                     <button
                                         onClick={startAnalysis}

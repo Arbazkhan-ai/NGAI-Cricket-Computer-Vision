@@ -1,17 +1,19 @@
 
 import { useEffect, useState } from 'react';
 import { useLocation, useNavigate } from 'react-router-dom';
-import { StopCircle, ArrowLeft, Activity } from 'lucide-react';
-import { startLiveDetection, stopLiveDetection } from '../services/api';
+import { StopCircle, ArrowLeft, Activity, PlayCircle } from 'lucide-react';
+import { startLiveDetection, stopLiveDetection, startLbwLiveDetection, stopLbwLiveDetection } from '../services/api';
 
 export default function LiveDetection() {
     const location = useLocation();
     const navigate = useNavigate();
-    const { ipAddress, port, showLandmarks } = location.state || {};
+    const { ipAddress, port, showLandmarks, analysisType, manualPitch } = location.state || {};
     const [status, setStatus] = useState('Initializing...');
     const [streamError, setStreamError] = useState(false);
     const [countdown, setCountdown] = useState<number | null>(null);
     const [liveScore, setLiveScore] = useState(0);
+    const [lbwDecision, setLbwDecision] = useState<string | null>(null);
+    const [streamKey, setStreamKey] = useState(Date.now());
 
     const [error, setError] = useState<string | null>(null);
 
@@ -21,7 +23,11 @@ export default function LiveDetection() {
         const start = async () => {
             try {
                 setStatus('Starting Detection Service...');
-                await startLiveDetection(ipAddress, port, showLandmarks);
+                if (analysisType === 'lbw') {
+                    await startLbwLiveDetection(ipAddress, port, showLandmarks, manualPitch);
+                } else {
+                    await startLiveDetection(ipAddress, port, showLandmarks);
+                }
                 if (mounted) {
                     setStatus('Running');
                     setCountdown(3);
@@ -65,8 +71,14 @@ export default function LiveDetection() {
 
         const interval = setInterval(async () => {
             try {
-                const res = await fetch('http://127.0.0.1:8080/get_score');
+                const fetchPort = analysisType === 'lbw' ? '8081' : '8080';
+                const res = await fetch(`http://127.0.0.1:${fetchPort}/get_score`);
                 const data = await res.json();
+                
+                if (analysisType === 'lbw') {
+                    setLbwDecision(data.decision);
+                }
+                
                 setLiveScore(data.score);
             } catch (err) {
                 console.error("Score fetch error", err);
@@ -77,10 +89,34 @@ export default function LiveDetection() {
     }, [status]);
     const handleStop = async () => {
         try {
-            await stopLiveDetection();
+            if (analysisType === 'lbw') {
+                await stopLbwLiveDetection();
+            } else {
+                await stopLiveDetection();
+            }
             navigate('/source');
         } catch (err) {
             console.error('Failed to stop', err);
+        }
+    };
+
+    const handleReplay = async () => {
+        try {
+            setStatus('Restarting Detection Service...');
+            if (analysisType === 'lbw') {
+                await startLbwLiveDetection(ipAddress, port, showLandmarks, manualPitch);
+            } else {
+                await startLiveDetection(ipAddress, port, showLandmarks);
+            }
+            setStatus('Running');
+            setCountdown(3);
+            setLiveScore(0);
+            if (analysisType === 'lbw') setLbwDecision(null);
+            setStreamKey(Date.now());
+            setStreamError(false);
+        } catch (err: any) {
+            setError(err.message || 'Failed to restart detection');
+            setStatus('Error');
         }
     };
 
@@ -111,10 +147,19 @@ export default function LiveDetection() {
 
                 {/* Score Panel (If Game Active) */}
                 <div className="mt-6 flex items-center gap-6 animate-in slide-in-from-top-4 duration-700">
-                    <div className="bg-white/10 backdrop-blur-md rounded-2xl p-4 border border-white/20 flex-1">
-                        <div className="text-emerald-100 text-xs font-bold uppercase tracking-wider mb-1">Game Score</div>
-                        <div className="text-4xl font-black">{liveScore}</div>
-                    </div>
+                    {analysisType === 'lbw' ? (
+                        <div className="bg-white/10 backdrop-blur-md rounded-2xl p-4 border border-white/20 flex-1">
+                            <div className="text-emerald-100 text-xs font-bold uppercase tracking-wider mb-1">LBW Decision</div>
+                            <div className={`text-3xl font-black ${lbwDecision === 'OUT' ? 'text-red-400' : 'text-white'}`}>
+                                {lbwDecision || 'Waiting...'}
+                            </div>
+                        </div>
+                    ) : (
+                        <div className="bg-white/10 backdrop-blur-md rounded-2xl p-4 border border-white/20 flex-1">
+                            <div className="text-emerald-100 text-xs font-bold uppercase tracking-wider mb-1">Game Score</div>
+                            <div className="text-4xl font-black">{liveScore}</div>
+                        </div>
+                    )}
                     <div className="bg-white/10 backdrop-blur-md rounded-2xl p-4 border border-white/20 flex-1">
                         <div className="text-emerald-100 text-xs font-bold uppercase tracking-wider mb-1">Active Rules</div>
                         <div className="text-xl font-bold">Rule-Based Active</div>
@@ -130,7 +175,7 @@ export default function LiveDetection() {
                 {status === 'Running' && countdown === -1 && !streamError ? (
                     <div className="w-full max-w-4xl relative rounded-2xl overflow-hidden shadow-lg border-4 border-emerald-500/20 bg-black aspect-video flex items-center justify-center">
                         <img
-                            src={`http://127.0.0.1:8080/video_feed?t=${Date.now()}`}
+                            src={`http://127.0.0.1:${analysisType === 'lbw' ? '8081' : '8080'}/video_feed?t=${streamKey}`}
                             alt="Live Detection Feed"
                             className="w-full h-full object-contain"
                             onError={(e) => {
@@ -195,6 +240,14 @@ export default function LiveDetection() {
                         >
                             <ArrowLeft className="w-4 h-4" />
                             Back
+                        </button>
+
+                        <button
+                            onClick={handleReplay}
+                            className="bg-blue-500 hover:bg-blue-600 text-white px-8 py-3 rounded-xl font-bold shadow-lg shadow-blue-200 transition-all active:scale-95 flex items-center gap-2"
+                        >
+                            <PlayCircle className="w-5 h-5" />
+                            Replay Video
                         </button>
 
                         <button

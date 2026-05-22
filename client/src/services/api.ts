@@ -80,6 +80,64 @@ export const analyzeVideo = async (file: File, mode: string = 'mediapipe', onPro
     return finalResult;
 };
 
+export const uploadVideoOnly = async (file: File): Promise<string> => {
+    const formData = new FormData();
+    formData.append('video', file);
+    const response = await fetch(`${API_URL}/upload-video-only`, {
+        method: 'POST',
+        body: formData,
+    });
+    if (!response.ok) throw new Error('Video upload failed');
+    const data = await response.json();
+    return data.video_path;
+};
+
+export const analyzeLbwVideo = async (file: File, mode: string = 'auto', onProgress?: (msg: string) => void): Promise<any> => {
+    const formData = new FormData();
+    formData.append('video', file);
+    formData.append('mode', mode);
+
+    const response = await fetch(`${API_URL}/analyze-lbw-video`, {
+        method: 'POST',
+        body: formData,
+    });
+
+    if (!response.ok) throw new Error('LBW Video analysis failed');
+
+    const reader = response.body?.getReader();
+    const decoder = new TextDecoder();
+    let finalResult = null;
+
+    while (reader) {
+        const { value, done } = await reader.read();
+        if (done) break;
+
+        const chunk = decoder.decode(value);
+        const lines = chunk.split('\n');
+
+        for (const line of lines) {
+            if (line.startsWith('data: ')) {
+                try {
+                    const data = JSON.parse(line.slice(6));
+                    if (data.progress && onProgress) {
+                        onProgress(data.progress);
+                    }
+                    if (data.video_url) {
+                        finalResult = data;
+                    }
+                    if (data.error) {
+                        throw new Error(data.error);
+                    }
+                } catch (e) {
+                    console.error("Error parsing SSE data", e);
+                }
+            }
+        }
+    }
+
+    return finalResult;
+};
+
 // Auth
 export const signup = async (data: any) => {
     const response = await fetch(`${API_URL}/signup`, {
@@ -111,11 +169,11 @@ export const getHistory = async () => {
     return response.json();
 };
 
-export const startLiveDetection = async (ip: string, port: string, showLandmarks: boolean) => {
+export const startLiveDetection = async (ip: string, port: string, showLandmarks: boolean, manualPitch?: number[][]) => {
     const response = await fetch(`${API_URL}/start_live`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ ip, port, showLandmarks }),
+        body: JSON.stringify({ ip, port, showLandmarks, manual_pitch: manualPitch }),
     });
     if (!response.ok) {
         throw new Error('Failed to start live detection');
@@ -129,6 +187,28 @@ export const stopLiveDetection = async () => {
     });
     if (!response.ok) {
         throw new Error('Failed to stop live detection');
+    }
+    return response.json();
+};
+
+export const startLbwLiveDetection = async (ip: string, port: string, showLandmarks: boolean, manualPitch?: number[][]) => {
+    const response = await fetch(`${API_URL}/start_lbw_live`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ ip, port, showLandmarks, manual_pitch: manualPitch }),
+    });
+    if (!response.ok) {
+        throw new Error('Failed to start LBW live detection');
+    }
+    return response.json();
+};
+
+export const stopLbwLiveDetection = async () => {
+    const response = await fetch(`${API_URL}/stop_lbw_live`, {
+        method: 'POST',
+    });
+    if (!response.ok) {
+        throw new Error('Failed to stop LBW live detection');
     }
     return response.json();
 };

@@ -63,6 +63,7 @@ const PYTHON_EXECUTABLE = process.platform === 'win32'
 // ------------------------------------------------------
 let pythonProcess = null;
 let liveProcess = null; // Handle for the live detection window process
+let liveLbwProcess = null; // Handle for the LBW live detection process
 const requestQueue = []; // Array of {resolve, reject} objects corresponding to sent requests
 
 // Function to start the persistent Python process
@@ -251,6 +252,89 @@ app.post('/api/analyze-video', upload.single('video'), async (req, res) => {
 });
 
 
+// Endpoint to handle LBW video upload and analysis
+app.post('/api/analyze-lbw-video', upload.single('video'), async (req, res) => {
+    if (!req.file) {
+        return res.status(400).json({ error: 'No video file provided' });
+    }
+
+    const videoPath = req.file.path;
+    const mode = req.body.mode || 'auto';
+
+    // Output filename
+    const filename = path.basename(videoPath, path.extname(videoPath)) + '_lbw_processed.mp4';
+    const outputPath = path.join(path.dirname(videoPath), filename);
+
+    console.log(`Processing LBW video: ${videoPath}`);
+
+    // Call process_lbw_video.py
+    const scriptPath = path.join(__dirname, '..', 'cricket_lbw_system', 'process_lbw_video.py');
+    const args = [scriptPath, '--input', videoPath, '--output', outputPath, '--mode', mode];
+
+    let exe = PYTHON_EXECUTABLE;
+    if (!fs.existsSync(exe)) {
+        exe = 'python';
+    }
+
+    res.setHeader('Content-Type', 'text/event-stream');
+    res.setHeader('Cache-Control', 'no-cache');
+    res.setHeader('Connection', 'keep-alive');
+
+    let finalShotResult = null;
+
+    const proc = spawn(exe, args, { cwd: path.join(__dirname, '..', 'cricket_lbw_system') });
+
+    proc.stdout.on('data', (data) => {
+        const message = data.toString().trim();
+        console.log(`LBW VIDEO OUT: ${message}`);
+        
+        if (message.includes('FINAL_RESULT:')) {
+            const parts = message.split('FINAL_RESULT:')[1].trim().split('|');
+            if (parts.length >= 2) {
+                finalShotResult = {
+                    class_name: parts[0],
+                    conf: parseFloat(parts[1])
+                };
+            }
+        }
+
+        res.write(`data: ${JSON.stringify({ progress: message })}\n\n`);
+    });
+
+    proc.stderr.on('data', (data) => console.error(`LBW VIDEO ERR: ${data}`));
+
+    proc.on('close', (code) => {
+        if (code === 0) {
+            const processedUrl = `/uploads/${filename}`;
+            const resultsData = JSON.stringify(finalShotResult ? [finalShotResult] : [{ class_name: 'Analysis Complete', conf: 1.0, type: 'video' }]);
+            
+            db.query("INSERT INTO detections (image_path, results) VALUES (?, ?)", [processedUrl, resultsData], (err, results) => {
+                if (err) console.error("DB Error (LBW Video):", err.message);
+                
+                res.write(`data: ${JSON.stringify({ 
+                    message: 'Video processing complete', 
+                    video_url: processedUrl, 
+                    data: finalShotResult ? [finalShotResult] : null,
+                    db_id: results ? results.insertId : 0 
+                })}\n\n`);
+                res.end();
+            });
+        } else {
+            console.error(`LBW Video processing failed with code ${code}`);
+            res.write(`data: ${JSON.stringify({ error: 'Video processing failed' })}\n\n`);
+            res.end();
+        }
+    });
+});
+
+// Endpoint just to upload a video and get the path (used for live streaming mode)
+app.post('/api/upload-video-only', upload.single('video'), (req, res) => {
+    if (!req.file) {
+        return res.status(400).json({ error: 'No video file provided' });
+    }
+    res.json({ message: 'Upload successful', video_path: req.file.path });
+});
+
 app.get('/api/history', (req, res) => {
     db.query("SELECT * FROM detections ORDER BY timestamp DESC", (err, rows) => {
         if (err) {
@@ -278,7 +362,7 @@ app.post('/api/save-match', (req, res) => {
 
 // Function to start the live detection background service
 function startLiveService() {
-    const scriptPath = path.join(__dirname, '..', 'ai', 'live_inference.py');
+    const scriptPath = path.join(__dirname, '..', 'ai_engine', 'live_inference.py');
     console.log(`Starting Live Detection service...`);
 
     let exe = PYTHON_EXECUTABLE;
@@ -299,18 +383,42 @@ function startLiveService() {
     });
 }
 
+// Function to start the LBW live detection background service
+function startLiveLbwService() {
+    const scriptPath = path.join(__dirname, '..', 'cricket_lbw_system', 'live_lbw_inference.py');
+    console.log(`Starting LBW Live Detection service...`);
+
+    let exe = PYTHON_EXECUTABLE;
+    if (!fs.existsSync(exe)) exe = 'python';
+
+    liveLbwProcess = spawn(exe, [scriptPath], { cwd: path.join(__dirname, '..', 'cricket_lbw_system') });
+
+    liveLbwProcess.stdout.on('data', (data) => console.log(`LBW LIVE SERVICE: ${data}`));
+    liveLbwProcess.stderr.on('data', (data) => {
+        const out = data.toString();
+        if (!out.includes('HTTP/1.1 200')) console.error(`LBW LIVE SERVICE ERR: ${out}`);
+    });
+
+    liveLbwProcess.on('close', (code) => {
+        console.log(`LBW Live service exited with code ${code}. Restarting in 2s...`);
+        liveLbwProcess = null;
+        setTimeout(startLiveLbwService, 2000);
+    });
+}
+
 // Start both persistent services
 startPythonProcess();
 startLiveService();
+startLiveLbwService();
 
 // ... (other endpoints)
 
 // Start Live Detection Connection
 app.post('/api/start_live', (req, res) => {
-    const { ip } = req.body;
+    const { ip, manual_pitch, showLandmarks } = req.body;
     const http = require('http');
     
-    const postData = JSON.stringify({ ip });
+    const postData = JSON.stringify({ ip, manual_pitch, showLandmarks });
     const options = {
         hostname: 'localhost',
         port: 8080,
@@ -361,6 +469,65 @@ app.post('/api/stop_live', (req, res) => {
         }
     } else {
         res.json({ message: 'No live process running' });
+    }
+});
+
+// Start LBW Live Detection Connection
+app.post('/api/start_lbw_live', (req, res) => {
+    const { ip, manual_pitch } = req.body;
+    const http = require('http');
+    
+    const postData = JSON.stringify({ ip, manual_pitch });
+    const options = {
+        hostname: 'localhost',
+        port: 8081,
+        path: '/api/connect',
+        method: 'POST',
+        headers: {
+            'Content-Type': 'application/json',
+            'Content-Length': Buffer.byteLength(postData)
+        }
+    };
+
+    const request = http.request(options, (response) => {
+        let data = '';
+        response.on('data', (chunk) => { data += chunk; });
+        response.on('end', () => {
+            try {
+                res.json(JSON.parse(data));
+            } catch (e) {
+                res.status(500).json({ error: 'Invalid response from LBW live service' });
+            }
+        });
+    });
+
+    request.on('error', (e) => {
+        console.error('LBW Live service connection error:', e);
+        res.status(500).json({ error: 'LBW Live service not running' });
+    });
+
+    request.write(postData);
+    request.end();
+});
+
+// Stop LBW Live Detection Process
+app.post('/api/stop_lbw_live', (req, res) => {
+    if (liveLbwProcess) {
+        try {
+            if (process.platform === 'win32') {
+                spawn('taskkill', ['/pid', liveLbwProcess.pid, '/f', '/t']);
+            } else {
+                liveLbwProcess.kill();
+            }
+            liveLbwProcess = null;
+            console.log('Stopped LBW live process via API');
+            res.json({ message: 'LBW Live detection stopped' });
+        } catch (e) {
+            console.error('Error stopping LBW process:', e);
+            res.status(500).json({ error: 'Failed to stop LBW process' });
+        }
+    } else {
+        res.json({ message: 'No LBW live process running' });
     }
 });
 
