@@ -26,7 +26,7 @@ export default function LiveDetection() {
                 if (analysisType === 'lbw') {
                     await startLbwLiveDetection(ipAddress, port, showLandmarks, manualPitch);
                 } else {
-                    await startLiveDetection(ipAddress, port, showLandmarks);
+                    await startLiveDetection(ipAddress, port, showLandmarks, manualPitch);
                 }
                 if (mounted) {
                     setStatus('Running');
@@ -106,7 +106,7 @@ export default function LiveDetection() {
             if (analysisType === 'lbw') {
                 await startLbwLiveDetection(ipAddress, port, showLandmarks, manualPitch);
             } else {
-                await startLiveDetection(ipAddress, port, showLandmarks);
+                await startLiveDetection(ipAddress, port, showLandmarks, manualPitch);
             }
             setStatus('Running');
             setCountdown(3);

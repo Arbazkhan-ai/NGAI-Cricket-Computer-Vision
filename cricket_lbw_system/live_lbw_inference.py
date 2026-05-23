@@ -101,6 +101,9 @@ def generate_frames():
                 connection_status = "Video Finished / Interrupted"
                 camera.release(); camera = None; continue
 
+            # Flip frame horizontally to fix mirroring
+            # frame = cv2.flip(frame, 1)
+
             # Resize frame for LBW
             frame = resize_frame(frame)
             

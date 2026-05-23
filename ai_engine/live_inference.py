@@ -152,6 +152,9 @@ def generate_frames():
                 connection_status = "Stream Interrupted"
                 camera.release(); camera = None; continue
 
+            # Flip frame horizontally to fix mirroring (Left -> Right, Right -> Left)
+            # frame = cv2.flip(frame, 1)
+
             h, w = frame.shape[:2]
             
             # Keep original frame for AI processing
@@ -166,11 +169,18 @@ def generate_frames():
                 pitch_boxes.append((px1, py1, px2, py2))
             else:
                 results_pitch = pitch_model.predict(frame, conf=0.5, verbose=False)
+                best_pitch = None
+                best_conf = 0
                 for res in results_pitch:
                     for box in res.boxes:
                         if int(box.cls[0]) == 1:
-                            px1, py1, px2, py2 = box.xyxy[0].tolist()
-                            pitch_boxes.append((px1, py1, px2, py2))
+                            conf = float(box.conf[0])
+                            if conf > best_conf:
+                                best_conf = conf
+                                px1, py1, px2, py2 = box.xyxy[0].tolist()
+                                best_pitch = (px1, py1, px2, py2)
+                if best_pitch:
+                    pitch_boxes.append(best_pitch)
 
             results_ball = ball_model(frame, verbose=False, conf=0.15)
             all_batsmen = []
@@ -247,22 +257,48 @@ def generate_frames():
                 frames_without_ball += 1
                 if frames_without_ball > MAX_MISSING_FRAMES: ball_track = []; ball_hit_bat = False
 
-            if current_ball_box and batsman_box:
+            if current_ball_box and batsman_box and all_bats:
                 bcx, bcy = (current_ball_box[0]+current_ball_box[2])/2, (current_ball_box[1]+current_ball_box[3])/2
-                if (batsman_box[0]-50) <= bcx <= (batsman_box[2]+50) and (batsman_box[1]-50) <= bcy <= (batsman_box[3]+50):
-                    if not ball_hit_bat:
-                        # NEW HIT! Increment score
-                        game_score += 1
-                        last_hit_frame = current_frame_idx
-                    
-                    ball_hit_bat = True
+                
+                # Verify the ball is actually moving (not a false static detection on the bat/glove)
+                is_moving = False
+                if len(ball_track) >= 3:
+                    dx = ball_track[-1][0] - ball_track[0][0]
+                    dy = ball_track[-1][1] - ball_track[0][1]
+                    if abs(dx) > 10 or abs(dy) > 10:
+                        is_moving = True
+
+                if is_moving:
+                    ball_touched_bat = False
+                    for bat in all_bats:
+                        bat_cx, bat_cy = (bat[0]+bat[2])/2, (bat[1]+bat[3])/2
+                        if (batsman_box[0]-50) <= bat_cx <= (batsman_box[2]+50) and (batsman_box[1]-50) <= bat_cy <= (batsman_box[3]+50):
+                            # Very strict intersection (no huge margins)
+                            if (bat[0]-5) <= bcx <= (bat[2]+5) and (bat[1]-5) <= bcy <= (bat[3]+5):
+                                ball_touched_bat = True
+                                break
+                                
+                    if ball_touched_bat:
+                        if not ball_hit_bat:
+                            # NEW HIT! Increment score
+                            game_score += 1
+                            last_hit_frame = current_frame_idx
+                        
+                        ball_hit_bat = True
                     if current_shot_label != "Waiting...":
                         latched_shot_label, latched_shot_conf = current_shot_label, current_shot_conf
                         shot_display_countdown = SHOT_DISPLAY_FRAMES
 
             # Draw Pitch
-            for (px1, py1, px2, py2) in pitch_boxes:
-                cv2.rectangle(annotated_frame, (int(px1), int(py1)), (int(px2), int(py2)), (0, 255, 0), 2)
+            if manual_pitch_pts and len(manual_pitch_pts) == 4:
+                pts = np.array(manual_pitch_pts, np.int32)
+                cv2.polylines(annotated_frame, [pts], True, (255, 255, 0), 2)
+                cv2.putText(annotated_frame, "MANUAL PITCH", (int(manual_pitch_pts[0][0]), int(manual_pitch_pts[0][1]) - 5), 
+                            cv2.FONT_HERSHEY_SIMPLEX, 0.4, (255, 255, 0), 1)
+            else:
+                for (px1, py1, px2, py2) in pitch_boxes:
+                    cv2.rectangle(annotated_frame, (int(px1), int(py1)), (int(px2), int(py2)), (255, 255, 255), 1, cv2.LINE_AA)
+                    cv2.putText(annotated_frame, "AUTO PITCH", (int(px1), int(py1) - 5), cv2.FONT_HERSHEY_SIMPLEX, 0.4, (255, 255, 255), 1)
             
             # Draw Balls, Batsmen, Bats
             for item in all_batsmen + all_bats + ([current_ball_box] if current_ball_box else []):

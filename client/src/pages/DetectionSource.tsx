@@ -182,7 +182,7 @@ export default function DetectionSource() {
     };
 
     const handleOverlayClick = (e: React.MouseEvent<HTMLCanvasElement>) => {
-        if (!isPitchSetup) return;
+        if (!isPitchSetup || manualPitchPts.length >= 4) return;
         const canvas = overlayRef.current;
         if (!canvas) return;
         const rect = canvas.getBoundingClientRect();
@@ -595,7 +595,7 @@ export default function DetectionSource() {
                                     <h4 className="font-bold text-emerald-800 text-lg mb-1">Pitch Setup</h4>
                                     <p className="text-sm text-emerald-600 mb-4">Click 4 points on the video above to manually draw the pitch, or choose Auto Detect.</p>
                                     
-                                    <div className="flex justify-center mb-6">
+                                    <div className="flex justify-center mb-6 mt-4">
                                         <label className="flex items-center gap-3 cursor-pointer group">
                                             <div className={`w-12 h-6 rounded-full p-1 transition-colors ${showLandmarks ? 'bg-emerald-500' : 'bg-gray-300'}`}
                                                 onClick={(e) => { e.stopPropagation(); setShowLandmarks(!showLandmarks); }}>

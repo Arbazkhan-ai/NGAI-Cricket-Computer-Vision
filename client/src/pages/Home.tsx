@@ -193,7 +193,7 @@ export default function Home() {
                             autoPlay
                             muted
                             playsInline
-                            className={`w-full h-full object-cover ${!isStreaming ? 'hidden' : ''}`}
+                            className={`w-full h-full object-cover scale-x-[-1] ${!isStreaming ? 'hidden' : ''}`}
                         />
                         <canvas
                             ref={canvasRef}
