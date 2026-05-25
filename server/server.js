@@ -327,12 +327,111 @@ app.post('/api/analyze-lbw-video', upload.single('video'), async (req, res) => {
     });
 });
 
-// Endpoint just to upload a video and get the path (used for live streaming mode)
+// Endpoint just to upload a video and save to history unanalyzed
 app.post('/api/upload-video-only', upload.single('video'), (req, res) => {
     if (!req.file) {
         return res.status(400).json({ error: 'No video file provided' });
     }
-    res.json({ message: 'Upload successful', video_path: req.file.path });
+    const ext = path.extname(req.file.originalname) || '.mp4';
+    const filename = req.file.filename + ext;
+    const newPath = path.join('uploads', filename);
+    fs.renameSync(req.file.path, newPath);
+
+    const videoUrl = `/uploads/${filename}`;
+    db.query("INSERT INTO detections (image_path, results) VALUES (?, ?)", [videoUrl, "[]"], (err, results) => {
+        if (err) return res.status(500).json({ error: err.message });
+        res.json({ message: 'Upload successful', video_path: videoUrl, id: results.insertId });
+    });
+});
+
+// Endpoint to handle analyzing an existing video from the database
+app.post('/api/analyze-existing', async (req, res) => {
+    const { id, type, source_table = 'detections' } = req.body;
+    
+    // Ensure safe table name
+    const table = source_table === 'matches' ? 'matches' : 'detections';
+    const videoColumn = table === 'matches' ? 'video_url' : 'image_path';
+
+    db.query(`SELECT * FROM ${table} WHERE id = ?`, [id], (err, rows) => {
+        if (err) return res.status(500).json({ error: err.message });
+        if (!rows || rows.length === 0) return res.status(404).json({ error: 'Video not found' });
+        
+        const videoUrl = rows[0][videoColumn];
+        if (!videoUrl) return res.status(400).json({ error: 'No video associated with this record' });
+
+        const videoFilename = path.basename(videoUrl);
+        const videoPath = path.join(__dirname, '..', 'shared', 'uploads', videoFilename);
+        
+        if (!fs.existsSync(videoPath)) {
+            return res.status(404).json({ error: 'Original video file missing on server' });
+        }
+        
+        const suffix = type === 'lbw' ? '_lbw_processed.mp4' : '_processed.mp4';
+        const outFilename = path.basename(videoFilename, path.extname(videoFilename)) + suffix;
+        const outputPath = path.join(__dirname, '..', 'shared', 'uploads', outFilename);
+        
+        let scriptName = type === 'lbw' ? 'process_lbw_video.py' : 'process_video.py';
+        let engineDir = type === 'lbw' ? 'cricket_lbw_system' : 'ai_engine';
+        const scriptPath = path.join(__dirname, '..', engineDir, scriptName);
+        
+        const args = [scriptPath, '--input', videoPath, '--output', outputPath, '--mode', 'auto'];
+        
+        let exe = PYTHON_EXECUTABLE;
+        if (!fs.existsSync(exe)) exe = 'python';
+
+        res.setHeader('Content-Type', 'text/event-stream');
+        res.setHeader('Cache-Control', 'no-cache');
+        res.setHeader('Connection', 'keep-alive');
+        
+        let finalShotResult = null;
+        const proc = spawn(exe, args, { cwd: path.join(__dirname, '..', engineDir) });
+        
+        proc.stdout.on('data', (data) => {
+            const message = data.toString().trim();
+            console.log(`EXISTING ${type.toUpperCase()} OUT: ${message}`);
+            
+            if (message.includes('FINAL_RESULT:')) {
+                const parts = message.split('FINAL_RESULT:')[1].trim().split('|');
+                if (parts.length >= 2) {
+                    finalShotResult = { class_name: parts[0], conf: parseFloat(parts[1]) };
+                }
+            }
+            res.write(`data: ${JSON.stringify({ progress: message })}\n\n`);
+        });
+        
+        proc.stderr.on('data', (data) => console.error(`EXISTING ${type.toUpperCase()} ERR: ${data}`));
+        
+        proc.on('close', (code) => {
+            if (code === 0) {
+                const processedUrl = `/uploads/${outFilename}`;
+                const resultsData = JSON.stringify(finalShotResult ? [finalShotResult] : [{ class_name: 'Analysis Complete', conf: 1.0, type: 'video' }]);
+                
+                const updateQuery = table === 'matches' 
+                    ? `UPDATE matches SET video_url = ? WHERE id = ?`
+                    : `UPDATE detections SET image_path = ?, results = ? WHERE id = ?`;
+                
+                const updateParams = table === 'matches' 
+                    ? [processedUrl, id]
+                    : [processedUrl, resultsData, id];
+
+                db.query(updateQuery, updateParams, (err) => {
+                    if (err) console.error("DB Error (Update Video):", err.message);
+                    
+                    res.write(`data: ${JSON.stringify({ 
+                        message: 'Video processing complete', 
+                        video_url: processedUrl, 
+                        data: finalShotResult ? [finalShotResult] : null,
+                        db_id: id
+                    })}\n\n`);
+                    res.end();
+                });
+            } else {
+                console.error(`Existing video processing failed with code ${code}`);
+                res.write(`data: ${JSON.stringify({ error: 'Video processing failed' })}\n\n`);
+                res.end();
+            }
+        });
+    });
 });
 
 app.get('/api/history', (req, res) => {
@@ -353,8 +452,8 @@ app.get('/api/matches', (req, res) => {
 });
 
 app.post('/api/save-match', (req, res) => {
-    const { score, shots_count, duration } = req.body;
-    db.query("INSERT INTO matches (score, shots_count, duration) VALUES (?, ?, ?)", [score, shots_count, duration], (err, results) => {
+    const { score, shots_count, duration, details, video_url } = req.body;
+    db.query("INSERT INTO matches (score, shots_count, duration, details, video_url) VALUES (?, ?, ?, ?, ?)", [score, shots_count, duration, details ? JSON.stringify(details) : null, video_url || null], (err, results) => {
         if (err) return res.status(500).json({ error: err.message });
         res.json({ id: results.insertId, message: 'Match saved successfully' });
     });

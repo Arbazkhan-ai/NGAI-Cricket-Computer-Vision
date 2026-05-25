@@ -37,10 +37,12 @@ pitch_roi = None
 stump_rect = [300, 400, 500, 700]
 pad_hit_time = None
 manual_pitch_pts = []
+session_log = []
+last_logged_pad_hit_time = None
 
 @app.route('/api/connect', methods=['POST'])
 def connect_camera():
-    global camera, connection_status, current_ip, pitch_roi, stump_rect, pad_hit_time, manual_pitch_pts
+    global camera, connection_status, current_ip, pitch_roi, stump_rect, pad_hit_time, manual_pitch_pts, session_log, last_logged_pad_hit_time
     data = request.json
     ip = data.get('ip', '')
     manual_pitch_pts = data.get('manual_pitch', [])
@@ -49,6 +51,8 @@ def connect_camera():
     pitch_roi = None
     stump_rect = [300, 400, 500, 700]
     pad_hit_time = None
+    session_log = []
+    last_logged_pad_hit_time = None
     tracker.clear()
     lbw_logic.reset()
     
@@ -56,8 +60,14 @@ def connect_camera():
     
     current_ip = ip
     
-    print(f"Connecting to: {ip if ip else 'Local Webcam'}")
-    camera = cv2.VideoCapture(ip if ip else 0)
+    video_source = ip if ip else 0
+    if isinstance(ip, str) and ip.startswith('/uploads/'):
+        video_source = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), 'shared', ip.lstrip('/'))
+    elif isinstance(ip, str) and ip.startswith('uploads/'):
+        video_source = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), 'shared', ip)
+
+    print(f"Connecting to: {video_source}")
+    camera = cv2.VideoCapture(video_source)
     if camera.isOpened():
         connection_status = "Connected"
         current_ip = ip
@@ -74,20 +84,26 @@ def get_status():
 def reset_score():
     tracker.clear()
     lbw_logic.reset()
-    global pad_hit_time
+    global pad_hit_time, session_log, last_logged_pad_hit_time
     pad_hit_time = None
+    session_log = []
+    last_logged_pad_hit_time = None
     return jsonify({"status": "success", "score": 0})
 
 @app.route('/get_score')
 def get_score():
     return jsonify({"score": 0, "decision": lbw_logic.decision})
 
+@app.route('/get_log')
+def get_log():
+    return jsonify({"log": session_log})
+
 @app.route('/video_feed')
 def video_feed():
     return Response(generate_frames(), mimetype='multipart/x-mixed-replace; boundary=frame')
 
 def generate_frames():
-    global camera, connection_status, pitch_roi, stump_rect, pad_hit_time, current_ip
+    global camera, connection_status, pitch_roi, stump_rect, pad_hit_time, current_ip, session_log, last_logged_pad_hit_time
     prev_time = time.time()
 
     while True:
@@ -178,6 +194,16 @@ def generate_frames():
             else:
                 if lbw_logic.first_contact and (decision == "PENDING" or decision == "CHECK LBW"):
                     decision = lbw_logic.judge_lbw(predicted_path, stump_rect)
+            
+            # Log final decision once
+            if decision not in ["PENDING", "CHECK LBW", ""] and pad_hit_time is not None:
+                if last_logged_pad_hit_time != pad_hit_time:
+                    last_logged_pad_hit_time = pad_hit_time
+                    session_log.append({
+                        "time": time.strftime("%I:%M:%S %p"),
+                        "type": "lbw",
+                        "decision": decision
+                    })
 
             # 8. Visualization
             if pose_results:

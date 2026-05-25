@@ -1,8 +1,7 @@
-
-import { Camera, Video, Image as ImageIcon, Smartphone, MonitorPlay, UploadCloud, Loader2, Bot, Activity, Zap, Target } from 'lucide-react';
+import { Camera, Video, Image as ImageIcon, Smartphone, MonitorPlay, UploadCloud, Loader2, Zap } from 'lucide-react';
 import { useState, useRef, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { analyzeImage, analyzeVideo, analyzeLbwVideo, uploadVideoOnly, type DetectionResult } from '../services/api';
+import { analyzeImage, uploadVideoOnly, type DetectionResult } from '../services/api';
 
 
 
@@ -206,7 +205,8 @@ export default function DetectionSource() {
         setIsAnalyzing(true);
         setAnalysisProgress('Uploading video...');
         try {
-            const videoPath = await uploadVideoOnly(file);
+            const uploadRes = await uploadVideoOnly(file);
+            const videoPath = uploadRes.video_path;
             const ptsArray = isAuto ? undefined : manualPitchPts.map(p => [Math.round(p.x), Math.round(p.y)]);
             
             navigate('/live', {
@@ -259,17 +259,6 @@ export default function DetectionSource() {
                 if (response.data) {
                     setAnalysisResult(response.data.map(mapDetection));
                 }
-            } else if (selectedMethod === 'video') {
-                const apiCall = analysisType === 'lbw' ? analyzeLbwVideo : analyzeVideo;
-                const response = await apiCall(file, 'auto', (progress) => {
-                    setAnalysisProgress(progress);
-                });
-                if (response.video_url) {
-                    setPreviewUrl(`http://localhost:3000${response.video_url}`);
-                    if (response.data) {
-                        setAnalysisResult(response.data);
-                    }
-                }
             }
         } catch (error) {
             console.error('Analysis failed', error);
@@ -279,6 +268,8 @@ export default function DetectionSource() {
             setAnalysisProgress('');
         }
     };
+    
+
 
     // Effect to draw on Image when result changes
     useEffect(() => {

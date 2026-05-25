@@ -62,7 +62,9 @@ except Exception as e:
 camera = None
 connection_status = "Not Connected"
 current_ip = ""
+current_frame_idx = 0
 manual_pitch_pts = None
+session_log = []
 show_landmarks_flag = False
 
 # Tracking State
@@ -78,7 +80,6 @@ shot_display_countdown = 0
 # Global Game State
 game_score = 0
 last_hit_frame = -1
-current_frame_idx = 0
 
 def draw_trail(frame, track):
     if len(track) < 2: return frame
@@ -96,7 +97,7 @@ def draw_trail(frame, track):
 
 @app.route('/api/connect', methods=['POST'])
 def connect_camera():
-    global camera, connection_status, current_ip, ball_track, ball_hit_bat, pose_buffer, manual_pitch_pts, show_landmarks_flag
+    global camera, connection_status, current_ip, ball_track, ball_hit_bat, pose_buffer, manual_pitch_pts, show_landmarks_flag, session_log
     data = request.json
     ip = data.get('ip', '')
     manual_pitch_pts = data.get('manual_pitch', None)
@@ -104,13 +105,21 @@ def connect_camera():
     
     # Reset tracking state
     ball_track = []
+    ball_hit_bat = False
     pose_buffer = []
+    session_log = []
     ball_hit_bat = False
     
     if camera: camera.release()
     
-    print(f"Connecting to: {ip if ip else 'Local Webcam'}")
-    camera = cv2.VideoCapture(ip if ip else 0)
+    video_source = ip if ip else 0
+    if isinstance(ip, str) and ip.startswith('/uploads/'):
+        video_source = os.path.join(os.path.dirname(BASE_DIR), 'shared', ip.lstrip('/'))
+    elif isinstance(ip, str) and ip.startswith('uploads/'):
+        video_source = os.path.join(os.path.dirname(BASE_DIR), 'shared', ip)
+
+    print(f"Connecting to: {video_source}")
+    camera = cv2.VideoCapture(video_source)
     if camera.isOpened():
         connection_status = "Connected"
         current_ip = ip
@@ -125,20 +134,28 @@ def get_status():
 
 @app.route('/reset_score', methods=['POST'])
 def reset_score():
-    global game_score
+    global game_score, ball_track, ball_hit_bat, pose_buffer, session_log
     game_score = 0
+    ball_track = []
+    ball_hit_bat = False
+    pose_buffer = []
+    session_log = []
     return jsonify({"status": "success", "score": 0})
 
 @app.route('/get_score')
 def get_score():
     return jsonify({"score": game_score})
 
+@app.route('/get_log')
+def get_log():
+    return jsonify({"log": session_log})
+
 @app.route('/video_feed')
 def video_feed():
     return Response(generate_frames(), mimetype='multipart/x-mixed-replace; boundary=frame')
 
 def generate_frames():
-    global camera, ball_model, pitch_model, shot_model, scaler, classes, mp_drawing, pose, mp_pose, ball_track, frames_without_ball, ball_hit_bat, pose_buffer, latched_shot_label, latched_shot_conf, shot_display_countdown, connection_status, game_score, last_hit_frame, current_frame_idx, manual_pitch_pts, current_ip, show_landmarks_flag
+    global camera, ball_model, pitch_model, shot_model, scaler, classes, mp_drawing, pose, mp_pose, ball_track, frames_without_ball, ball_hit_bat, pose_buffer, latched_shot_label, latched_shot_conf, shot_display_countdown, connection_status, game_score, last_hit_frame, current_frame_idx, manual_pitch_pts, current_ip, show_landmarks_flag, session_log
 
     while True:
         current_frame_idx += 1
@@ -283,6 +300,17 @@ def generate_frames():
                             # NEW HIT! Increment score
                             game_score += 1
                             last_hit_frame = current_frame_idx
+                            if current_shot_label and current_shot_label != "Waiting...":
+                                speed = estimate_speed(ball_track)
+                                ball_type = get_ball_type(ball_track, speed)
+                                session_log.append({
+                                    "time": time.strftime("%I:%M:%S %p"),
+                                    "type": "shot",
+                                    "label": current_shot_label,
+                                    "conf": current_shot_conf,
+                                    "speed": speed,
+                                    "ball_type": ball_type
+                                })
                         
                         ball_hit_bat = True
                     if current_shot_label != "Waiting...":

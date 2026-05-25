@@ -1,72 +1,68 @@
-const mysql = require('mysql2');
+const sqlite3 = require('sqlite3').verbose();
+const path = require('path');
 
-// 1. Initial connection without database selection to ensure DB exists
-const connectionConfigs = {
-  host: 'localhost',
-  user: 'root',
-  password: '', // Default for many local setups
-};
-
-// 2. Create the Pool (with database name)
-const pool = mysql.createPool({
-  ...connectionConfigs,
-  database: 'cricket_db',
-  waitForConnections: true,
-  connectionLimit: 10,
-  queueLimit: 0
+const dbPath = path.join(__dirname, 'cricket_db.sqlite');
+const db = new sqlite3.Database(dbPath, (err) => {
+    if (err) {
+        console.error('CRITICAL: SQLite Initialization Failed!', err.message);
+    } else {
+        console.log('Connected to the SQLite database (cricket_db.sqlite).');
+    }
 });
 
-// Helper to run initialization queries
-const initializeDatabase = async () => {
-  // Create a separate connection just for setup (to handle DB creation)
-  const setupConn = mysql.createConnection(connectionConfigs).promise();
-  
-  try {
-    // Create database if it doesn't exist
-    await setupConn.query(`CREATE DATABASE IF NOT EXISTS cricket_db`);
-    await setupConn.end();
-
-    const dbConn = pool.promise();
-
-    const tables = [
-      `CREATE TABLE IF NOT EXISTS detections (
-        id INT AUTO_INCREMENT PRIMARY KEY,
+// Initialize tables
+db.serialize(() => {
+    db.run(`CREATE TABLE IF NOT EXISTS detections (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
         image_path TEXT,
         results TEXT,
         timestamp DATETIME DEFAULT CURRENT_TIMESTAMP
-      )`,
-      `CREATE TABLE IF NOT EXISTS matches (
-        id INT AUTO_INCREMENT PRIMARY KEY,
-        score INT,
-        shots_count INT,
+    )`);
+    db.run(`CREATE TABLE IF NOT EXISTS matches (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        score INTEGER,
+        shots_count INTEGER,
         duration VARCHAR(50),
+        details TEXT,
+        video_url TEXT,
         timestamp DATETIME DEFAULT CURRENT_TIMESTAMP
-      )`,
-      `CREATE TABLE IF NOT EXISTS users (
-        id INT AUTO_INCREMENT PRIMARY KEY,
+    )`);
+    // Alter table to add video_url if it doesn't exist
+    db.run(`ALTER TABLE matches ADD COLUMN video_url TEXT`, (err) => {
+        // Ignore error if column already exists
+    });
+    db.run(`CREATE TABLE IF NOT EXISTS users (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
         name VARCHAR(255),
         email VARCHAR(255) UNIQUE,
         password VARCHAR(255),
         created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
         reset_token VARCHAR(255),
         reset_token_expiry BIGINT
-      )`
-    ];
+    )`);
+});
 
-    for (const query of tables) {
-      await dbConn.query(query);
+// Wrapper to mimic mysql2's db.query behavior so server.js doesn't need to change much
+module.exports = {
+    query: (sql, params, callback) => {
+        if (typeof params === 'function') {
+            callback = params;
+            params = [];
+        }
+        
+        const isSelect = sql.trim().toUpperCase().startsWith('SELECT');
+        if (isSelect) {
+            db.all(sql, params, (err, rows) => {
+                if (callback) callback(err, rows);
+            });
+        } else {
+            db.run(sql, params, function(err) {
+                // 'this' contains lastID and changes for sqlite3 db.run
+                if (callback) {
+                    const resultObj = this ? { insertId: this.lastID, affectedRows: this.changes } : {};
+                    callback(err, resultObj);
+                }
+            });
+        }
     }
-
-    console.log('Connected to the MySQL database (cricket_db) and tables verified.');
-  } catch (err) {
-    console.error('CRITICAL: MySQL Initialization Failed!');
-    console.error('Error details:', err.message);
-    console.error('Please ensure MySQL is running and credentials in database.js are correct.');
-  }
 };
-
-// Start initialization
-initializeDatabase();
-
-// Export the pool
-module.exports = pool;

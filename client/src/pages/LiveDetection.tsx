@@ -1,8 +1,9 @@
 
-import { useEffect, useState } from 'react';
+import { useEffect, useState, useRef } from 'react';
 import { useLocation, useNavigate } from 'react-router-dom';
 import { StopCircle, ArrowLeft, Activity, PlayCircle } from 'lucide-react';
-import { startLiveDetection, stopLiveDetection, startLbwLiveDetection, stopLbwLiveDetection } from '../services/api';
+import { startLiveDetection, stopLiveDetection, startLbwLiveDetection, stopLbwLiveDetection, saveMatch } from '../services/api';
+import { useGame } from '../context/GameContext';
 
 export default function LiveDetection() {
     const location = useLocation();
@@ -14,14 +15,25 @@ export default function LiveDetection() {
     const [liveScore, setLiveScore] = useState(0);
     const [lbwDecision, setLbwDecision] = useState<string | null>(null);
     const [streamKey, setStreamKey] = useState(Date.now());
-
     const [error, setError] = useState<string | null>(null);
+
+    const { rules, gameActive, score, setScore } = useGame();
+    const prevBackendScoreRef = useRef(0);
+    const startTimeRef = useRef(Date.now());
 
     useEffect(() => {
         let mounted = true;
 
         const start = async () => {
             try {
+                // Reset backend score when starting a new session
+                const fetchPort = analysisType === 'lbw' ? '8081' : '8080';
+                await fetch(`http://127.0.0.1:${fetchPort}/reset_score`, { method: 'POST' }).catch(() => {});
+                if (gameActive) setScore(0);
+                setLiveScore(0);
+                prevBackendScoreRef.current = 0;
+                startTimeRef.current = Date.now();
+
                 setStatus('Starting Detection Service...');
                 if (analysisType === 'lbw') {
                     await startLbwLiveDetection(ipAddress, port, showLandmarks, manualPitch);
@@ -79,22 +91,60 @@ export default function LiveDetection() {
                     setLbwDecision(data.decision);
                 }
                 
-                setLiveScore(data.score);
+                if (data.score > prevBackendScoreRef.current) {
+                    const diff = data.score - prevBackendScoreRef.current;
+                    prevBackendScoreRef.current = data.score;
+                    
+                    if (gameActive) {
+                        const hitRule = rules.find(r => r.id === 1);
+                        if (hitRule && hitRule.active) {
+                            setScore((prev: number) => prev + diff);
+                        }
+                    } else {
+                        setLiveScore(data.score);
+                    }
+                }
             } catch (err) {
                 console.error("Score fetch error", err);
             }
         }, 500);
 
         return () => clearInterval(interval);
-    }, [status]);
+    }, [status, gameActive, rules, setScore]);
     const handleStop = async () => {
         try {
+            // Save the match before stopping
+            if (gameActive || liveScore > 0 || analysisType === 'lbw') {
+                const durationSeconds = Math.floor((Date.now() - startTimeRef.current) / 1000);
+                const minutes = Math.floor(durationSeconds / 60);
+                const seconds = durationSeconds % 60;
+                const durationStr = `${minutes}m ${seconds}s`;
+                
+                let details: any[] = [];
+                try {
+                    const fetchPort = analysisType === 'lbw' ? '8081' : '8080';
+                    const res = await fetch(`http://127.0.0.1:${fetchPort}/get_log`);
+                    const data = await res.json();
+                    details = data.log || [];
+                } catch (e) {
+                    console.error("Could not fetch log:", e);
+                }
+                
+                await saveMatch({
+                    score: gameActive ? score : liveScore,
+                    shots_count: liveScore, 
+                    duration: durationStr,
+                    details: details,
+                    video_url: ipAddress?.includes('/uploads/') ? ipAddress : null
+                }).catch((e: any) => console.error("Could not save match:", e));
+            }
+
             if (analysisType === 'lbw') {
                 await stopLbwLiveDetection();
             } else {
                 await stopLiveDetection();
             }
-            navigate('/source');
+            navigate('/match-history');
         } catch (err) {
             console.error('Failed to stop', err);
         }
@@ -110,7 +160,11 @@ export default function LiveDetection() {
             }
             setStatus('Running');
             setCountdown(3);
+            const fetchPort = analysisType === 'lbw' ? '8081' : '8080';
+            await fetch(`http://127.0.0.1:${fetchPort}/reset_score`, { method: 'POST' }).catch(() => {});
+            if (gameActive) setScore(0);
             setLiveScore(0);
+            prevBackendScoreRef.current = 0;
             if (analysisType === 'lbw') setLbwDecision(null);
             setStreamKey(Date.now());
             setStreamError(false);
@@ -157,12 +211,14 @@ export default function LiveDetection() {
                     ) : (
                         <div className="bg-white/10 backdrop-blur-md rounded-2xl p-4 border border-white/20 flex-1">
                             <div className="text-emerald-100 text-xs font-bold uppercase tracking-wider mb-1">Game Score</div>
-                            <div className="text-4xl font-black">{liveScore}</div>
+                            <div className="text-4xl font-black">{gameActive ? score : liveScore}</div>
                         </div>
                     )}
                     <div className="bg-white/10 backdrop-blur-md rounded-2xl p-4 border border-white/20 flex-1">
                         <div className="text-emerald-100 text-xs font-bold uppercase tracking-wider mb-1">Active Rules</div>
-                        <div className="text-xl font-bold">Rule-Based Active</div>
+                        <div className="text-xl font-bold">
+                            {gameActive ? rules.filter(r => r.active).map(r => r.title).join(', ') || 'None' : 'Standard Game'}
+                        </div>
                     </div>
                 </div>
 

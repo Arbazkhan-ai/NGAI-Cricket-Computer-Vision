@@ -17,7 +17,7 @@ interface GameContextProps {
     gameActive: boolean;
     setGameActive: (active: boolean) => void;
     score: number;
-    setScore: (score: number) => void;
+    setScore: React.Dispatch<React.SetStateAction<number>>;
     toggleRule: (id: number) => void;
 }
 
@@ -34,7 +34,7 @@ export const GameProvider = ({ children }: { children: ReactNode }) => {
     // Or true if we want them always visible by default. The user request implies conditional showing.
     // "when i select option in rule base game then show on live detection"
     const [gameActive, setGameActive] = useState(false);
-    const [score, setScore] = useState(42); // Example initial score
+    const [score, setScore] = useState(0); // Initial score
 
     const toggleRule = (id: number) => {
         setRules(prev => prev.map(rule =>

@@ -4,6 +4,9 @@ An advanced, real-time AI analytics platform for cricket. This system utilizes s
 
 ## 🚀 Features
 
+- **LBW Decision System**: Automated Out/Not Out prediction by analyzing bat-pad impact sequence and predicting stump intersection.
+- **Ball Trajectory Prediction**: Uses 2nd-degree polynomial regression to forecast the ball's future path.
+- **Batsman Pose Detection**: Uses MediaPipe to track 33 body keypoints, crucial for distinguishing bat vs. pad collisions and classifying shots.
 - **Live Ball Tracking**: Real-time detection and trajectory visualization using YOLOv8.
 - **Batting Shot Classification**: Hybrid MediaPipe + LSTM/ONNX model to identify shots (Sweep, Drive, Pullshot, Flick).
 - **Hawk-Eye Stats**: Estimates ball speed, swing amount, and spin intensity.

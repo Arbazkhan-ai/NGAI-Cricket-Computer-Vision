@@ -1,5 +1,4 @@
 const API_URL = 'http://localhost:3000/api';
-const FASTAPI_URL = 'http://localhost:8000';
 
 export interface DetectionResult {
     type: string;
@@ -80,7 +79,7 @@ export const analyzeVideo = async (file: File, mode: string = 'mediapipe', onPro
     return finalResult;
 };
 
-export const uploadVideoOnly = async (file: File): Promise<string> => {
+export const uploadVideoOnly = async (file: File): Promise<{ video_path: string, id: number }> => {
     const formData = new FormData();
     formData.append('video', file);
     const response = await fetch(`${API_URL}/upload-video-only`, {
@@ -88,8 +87,50 @@ export const uploadVideoOnly = async (file: File): Promise<string> => {
         body: formData,
     });
     if (!response.ok) throw new Error('Video upload failed');
-    const data = await response.json();
-    return data.video_path;
+    return await response.json();
+};
+
+export const analyzeExistingVideo = async (id: number, type: 'shot' | 'lbw', sourceTable: 'matches' | 'detections' = 'detections', onProgress?: (msg: string) => void): Promise<any> => {
+    const response = await fetch(`${API_URL}/analyze-existing`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ id, type, source_table: sourceTable }),
+    });
+
+    if (!response.ok) throw new Error('Existing video analysis failed');
+
+    const reader = response.body?.getReader();
+    const decoder = new TextDecoder();
+    let finalResult = null;
+
+    while (reader) {
+        const { value, done } = await reader.read();
+        if (done) break;
+
+        const chunk = decoder.decode(value);
+        const lines = chunk.split('\n');
+
+        for (const line of lines) {
+            if (line.startsWith('data: ')) {
+                try {
+                    const data = JSON.parse(line.slice(6));
+                    if (data.progress && onProgress) {
+                        onProgress(data.progress);
+                    }
+                    if (data.video_url) {
+                        finalResult = data;
+                    }
+                    if (data.error) {
+                        throw new Error(data.error);
+                    }
+                } catch (e) {
+                    console.error("Error parsing SSE data", e);
+                }
+            }
+        }
+    }
+
+    return finalResult;
 };
 
 export const analyzeLbwVideo = async (file: File, mode: string = 'auto', onProgress?: (msg: string) => void): Promise<any> => {
@@ -213,6 +254,28 @@ export const stopLbwLiveDetection = async () => {
     return response.json();
 };
 
+export const saveMatch = async (matchData: any): Promise<any> => {
+    const response = await fetch(`${API_URL}/save-match`, {
+        method: 'POST',
+        headers: {
+            'Content-Type': 'application/json',
+        },
+        body: JSON.stringify(matchData),
+    });
+    if (!response.ok) {
+        throw new Error('Failed to save match');
+    }
+    return response.json();
+};
+
+export const getMatches = async (): Promise<any[]> => {
+    const response = await fetch(`${API_URL}/matches`);
+    if (!response.ok) {
+        throw new Error('Failed to fetch matches');
+    }
+    return response.json();
+};
+
 export const forgotPassword = async (email: string) => {
     const response = await fetch(`${API_URL}/forgot-password`, {
         method: 'POST',
@@ -223,6 +286,7 @@ export const forgotPassword = async (email: string) => {
     if (!response.ok) throw new Error(result.error || 'Failed to send reset link');
     return result;
 };
+
 export const resetPassword = async (token: string, newPassword: string) => {
     const response = await fetch(`${API_URL}/reset-password`, {
         method: 'POST',

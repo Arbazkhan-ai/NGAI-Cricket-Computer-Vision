@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react';
-import { getHistory } from '../services/api';
-import { Eye, Calendar, Clock, Trophy, Target, X, PlayCircle } from 'lucide-react';
+import { getHistory, getMatches, analyzeExistingVideo } from '../services/api';
+import { Eye, Calendar, Clock, Trophy, Target, X, PlayCircle, Activity } from 'lucide-react';
 
 const SummaryCard = ({ title, value, icon: Icon }: { title: string, value: string, icon: any }) => (
     <div className="bg-white p-6 rounded-2xl border border-emerald-100 shadow-sm flex items-center gap-4 hover:shadow-md transition-shadow">
@@ -18,11 +18,46 @@ export default function MatchHistory() {
     const [history, setHistory] = useState<any[]>([]);
     const [loading, setLoading] = useState(true);
     const [selectedMatch, setSelectedMatch] = useState<any | null>(null);
+    const [isAnalyzing, setIsAnalyzing] = useState(false);
+    const [analysisProgress, setAnalysisProgress] = useState('');
+
+    const handleAnalyzeVideo = async (type: 'shot' | 'lbw', sourceTable: 'matches' | 'detections' = 'detections') => {
+        if (!selectedMatch) return;
+        setIsAnalyzing(true);
+        setAnalysisProgress(`Starting ${type === 'lbw' ? 'LBW' : 'Shot'} Analysis...`);
+        try {
+            const response = await analyzeExistingVideo(selectedMatch.id, type, sourceTable, (progress) => {
+                setAnalysisProgress(progress);
+            });
+            if (response.video_url) {
+                const updatedMatch = {
+                    ...selectedMatch,
+                    ...(sourceTable === 'matches' ? { video_url: response.video_url } : { image_path: response.video_url, results: JSON.stringify(response.data || []) })
+                };
+                setSelectedMatch(updatedMatch);
+                setHistory(prev => prev.map(m => (m.id === selectedMatch.id && m.type === (sourceTable === 'matches' ? 'match' : 'detection')) ? updatedMatch : m));
+            }
+        } catch (error) {
+            console.error('Analysis failed', error);
+            alert('Analysis failed. Check console.');
+        } finally {
+            setIsAnalyzing(false);
+            setAnalysisProgress('');
+        }
+    };
 
     useEffect(() => {
-        getHistory()
-            .then(data => {
-                setHistory(data);
+        Promise.all([getHistory(), getMatches()])
+            .then(([historyData, matchesData]) => {
+                // Add a type flag to distinguish them
+                const formattedHistory = historyData.map((d: any) => ({ ...d, type: 'detection' }));
+                const formattedMatches = matchesData.map((m: any) => ({ ...m, type: 'match' }));
+                
+                const combined = [...formattedHistory, ...formattedMatches].sort((a, b) => 
+                    new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime()
+                );
+                
+                setHistory(combined);
                 setLoading(false);
             })
             .catch(err => {
@@ -41,9 +76,12 @@ export default function MatchHistory() {
         return d.toLocaleDateString([], { month: 'short', day: 'numeric', year: 'numeric' });
     };
 
-    const getPrimaryResult = (resultsStr: string) => {
+    const getPrimaryResult = (match: any) => {
+        if (match.type === 'match') {
+            return `Score: ${match.score} | Shots: ${match.shots_count}`;
+        }
         try {
-            const results = JSON.parse(resultsStr);
+            const results = JSON.parse(match.results);
             if (Array.isArray(results) && results.length > 0) {
                 return results[0].class_name || 'N/A';
             }
@@ -64,8 +102,8 @@ export default function MatchHistory() {
         if (!path) return '';
         const cleanPath = path.replace(/\\/g, '/');
         if (cleanPath.startsWith('http')) return cleanPath;
-        if (cleanPath.startsWith('/')) return `http://localhost:3000${cleanPath}`;
-        return `http://localhost:3000/${cleanPath}`;
+        if (cleanPath.startsWith('/')) return `http://localhost:5000${cleanPath}`;
+        return `http://localhost:5000/${cleanPath}`;
     };
 
     return (
@@ -79,7 +117,7 @@ export default function MatchHistory() {
             {/* Summary Cards */}
             <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
                 <SummaryCard title="Total Sessions" value={history.length.toString()} icon={Trophy} />
-                <SummaryCard title="Recent Shot" value={history.length > 0 ? getPrimaryResult(history[0].results) : 'None'} icon={Target} />
+                <SummaryCard title="Recent Activity" value={history.length > 0 ? getPrimaryResult(history[0]) : 'None'} icon={Target} />
                 <SummaryCard title="Best Confidence" value="98.2%" icon={Clock} />
             </div>
 
@@ -125,17 +163,20 @@ export default function MatchHistory() {
                                             </div>
                                         </td>
                                         <td className="px-8 py-6">
-                                            <span className={`px-3 py-1 rounded-full text-[10px] font-bold uppercase tracking-wider ${match.image_path?.includes('.mp4') ? 'bg-blue-100 text-blue-700' : 'bg-violet-100 text-violet-700'}`}>
-                                                {match.image_path?.includes('.mp4') ? 'Video Analysis' : 'Image Analysis'}
+                                            <span className={`px-3 py-1 rounded-full text-[10px] font-bold uppercase tracking-wider ${
+                                                match.type === 'match' ? 'bg-amber-100 text-amber-700' :
+                                                match.image_path?.includes('.mp4') ? 'bg-blue-100 text-blue-700' : 'bg-violet-100 text-violet-700'
+                                            }`}>
+                                                {match.type === 'match' ? 'Live Match' : match.image_path?.includes('.mp4') ? 'Video Analysis' : 'Image Analysis'}
                                             </span>
                                         </td>
                                         <td className="px-8 py-6 font-black text-gray-700">
-                                            {getPrimaryResult(match.results)}
+                                            {getPrimaryResult(match)}
                                         </td>
                                         <td className="px-8 py-6">
                                             <div className="flex items-center gap-1.5 text-emerald-600 font-bold text-xs">
                                                 <div className="w-1.5 h-1.5 bg-emerald-500 rounded-full animate-pulse" />
-                                                Processed
+                                                {match.type === 'match' ? match.duration || 'Completed' : 'Processed'}
                                             </div>
                                         </td>
                                         <td className="px-8 py-6 text-right">
@@ -164,9 +205,55 @@ export default function MatchHistory() {
                     <div className="absolute inset-0 bg-black/80 backdrop-blur-md" onClick={() => setSelectedMatch(null)} />
                     <div className="bg-white dark:bg-zinc-900 w-full max-w-5xl rounded-[2.5rem] shadow-2xl relative overflow-hidden flex flex-col lg:flex-row animate-in zoom-in duration-300 max-h-[90vh]">
                         
-                        {/* Media Section */}
-                        <div className="lg:w-2/3 bg-black flex items-center justify-center relative group min-h-[300px]">
-                            {selectedMatch.image_path?.includes('.mp4') ? (
+                        {/* Media Section / Timeline Section */}
+                        <div className={`lg:w-2/3 flex flex-col items-center justify-center relative group min-h-[300px] ${selectedMatch.type === 'match' ? 'bg-gray-50 dark:bg-zinc-800' : 'bg-black'}`}>
+                            {selectedMatch.type === 'match' ? (
+                                <div className="w-full h-full flex flex-col">
+                                    {selectedMatch.video_url && (
+                                        <div className="flex-none bg-black border-b border-gray-200 dark:border-white/5">
+                                            <video 
+                                                src={getMediaPath(selectedMatch.video_url)}
+                                                autoPlay
+                                                controls 
+                                                className="max-h-[45vh] w-full"
+                                            />
+                                        </div>
+                                    )}
+                                    <div className="flex-1 p-8 overflow-y-auto custom-scrollbar">
+                                        <h3 className="text-xl font-black text-emerald-600 mb-6 flex items-center gap-2">
+                                            <Activity className="w-6 h-6 animate-pulse" />
+                                            Session Timeline
+                                        </h3>
+                                    {getResultsArray(selectedMatch.details).length === 0 ? (
+                                        <div className="text-gray-400 font-medium italic text-center py-12">
+                                            No detailed events logged for this session.
+                                        </div>
+                                    ) : (
+                                        <div className="space-y-4">
+                                            {getResultsArray(selectedMatch.details).map((event: any, idx: number) => (
+                                                <div key={idx} className="bg-white dark:bg-zinc-700 p-4 rounded-2xl shadow-sm flex items-center gap-4 border border-emerald-100 dark:border-white/5">
+                                                    <div className="text-sm font-bold text-emerald-500 w-24">
+                                                        {event.time}
+                                                    </div>
+                                                    <div className="flex-1">
+                                                        {event.type === 'shot' ? (
+                                                            <>
+                                                                <div className="font-bold text-gray-800 dark:text-white">{event.label}</div>
+                                                                <div className="text-xs text-gray-500 font-medium">Conf: {(event.conf * 100).toFixed(1)}% | Speed: {event.speed} | Type: {event.ball_type}</div>
+                                                            </>
+                                                        ) : (
+                                                            <>
+                                                                <div className="font-bold text-gray-800 dark:text-white">LBW Decision: {event.decision}</div>
+                                                            </>
+                                                        )}
+                                                    </div>
+                                                </div>
+                                            ))}
+                                        </div>
+                                    )}
+                                    </div>
+                                </div>
+                            ) : selectedMatch.image_path?.includes('.mp4') ? (
                                 <video 
                                     src={getMediaPath(selectedMatch.image_path)}
                                     autoPlay
@@ -180,14 +267,17 @@ export default function MatchHistory() {
                                     className="max-h-[70vh] object-contain"
                                 />
                             )}
-                            <div className="absolute top-6 left-6 px-4 py-2 bg-emerald-500 text-white rounded-full text-xs font-bold shadow-lg flex items-center gap-2 z-10">
-                                <PlayCircle className="w-4 h-4" />
-                                AI Processed Media
-                            </div>
+                            
+                            {selectedMatch.type !== 'match' && (
+                                <div className="absolute top-6 left-6 px-4 py-2 bg-emerald-500 text-white rounded-full text-xs font-bold shadow-lg flex items-center gap-2 z-10">
+                                    <PlayCircle className="w-4 h-4" />
+                                    AI Processed Media
+                                </div>
+                            )}
                         </div>
 
                         {/* Info Section */}
-                        <div className="lg:w-1/3 p-8 lg:p-10 flex flex-col border-l border-gray-100 dark:border-white/5 bg-gray-50 dark:bg-zinc-900/50 overflow-hidden">
+                        <div className="lg:w-1/3 p-8 lg:p-10 flex flex-col border-l border-gray-100 dark:border-white/5 bg-white dark:bg-zinc-900/50 overflow-hidden">
                             <button 
                                 onClick={() => setSelectedMatch(null)}
                                 className="absolute top-6 right-6 p-2 hover:bg-gray-200 dark:hover:bg-zinc-800 rounded-full transition-colors z-20"
@@ -195,33 +285,106 @@ export default function MatchHistory() {
                                 <X className="w-6 h-6 text-gray-400" />
                             </button>
 
-                            <h2 className="text-2xl font-black text-gray-900 dark:text-white mb-2">Session Details</h2>
-                            <p className="text-gray-500 text-sm mb-8">Detailed breakdown of AI detection results</p>
+                            <h2 className="text-2xl font-black text-gray-900 dark:text-white mb-2">Session Summary</h2>
+                            <p className="text-gray-500 text-sm mb-8">Quick facts about this session</p>
 
                             <div className="space-y-6 flex-1 overflow-y-auto pr-2 custom-scrollbar">
-                                <div>
-                                    <h4 className="text-[10px] font-bold text-emerald-600 uppercase tracking-widest mb-3">Detections</h4>
-                                    <div className="space-y-3">
-                                        {getResultsArray(selectedMatch.results).map((res: any, idx: number) => (
-                                            <div key={idx} className="bg-white dark:bg-zinc-800 p-4 rounded-2xl border border-emerald-100 dark:border-white/5 shadow-sm">
-                                                <div className="flex justify-between items-start mb-2">
-                                                    <span className="font-bold text-gray-800 dark:text-white">{res.class_name || 'Detection'}</span>
-                                                    <span className="text-emerald-500 font-bold text-sm">{(res.conf * 100).toFixed(1)}%</span>
-                                                </div>
-                                                <div className="w-full bg-gray-100 dark:bg-zinc-700 h-1.5 rounded-full overflow-hidden">
-                                                    <div className="bg-emerald-500 h-full transition-all duration-1000" style={{ width: `${res.conf * 100}%` }} />
-                                                </div>
+                                {selectedMatch.type === 'match' ? (
+                                    <div className="space-y-4">
+                                        <div className="bg-emerald-50 p-4 rounded-2xl border border-emerald-100">
+                                            <div className="text-emerald-600 font-bold text-xs uppercase mb-1">Score</div>
+                                            <div className="text-3xl font-black text-emerald-700">{selectedMatch.score}</div>
+                                        </div>
+                                        <div className="bg-emerald-50 p-4 rounded-2xl border border-emerald-100">
+                                            <div className="text-emerald-600 font-bold text-xs uppercase mb-1">Total Hits</div>
+                                            <div className="text-3xl font-black text-emerald-700">{selectedMatch.shots_count}</div>
+                                        </div>
+                                        
+                                        {selectedMatch.video_url && !selectedMatch.video_url.includes('_processed') && (
+                                            <div className="mt-6 pt-6 border-t border-emerald-100">
+                                                <h4 className="text-[10px] font-bold text-emerald-600 uppercase tracking-widest mb-3">Batch Processing</h4>
+                                                {isAnalyzing ? (
+                                                    <div className="flex flex-col items-center gap-3 bg-emerald-50/50 p-4 rounded-2xl">
+                                                        <Activity className="w-8 h-8 animate-spin text-emerald-500" />
+                                                        <div className="text-emerald-700 font-bold text-sm bg-white px-4 py-2 rounded-full shadow-sm text-center">
+                                                            {analysisProgress}
+                                                        </div>
+                                                    </div>
+                                                ) : (
+                                                    <div className="grid grid-cols-1 gap-3">
+                                                        <button
+                                                            onClick={() => handleAnalyzeVideo('shot', 'matches')}
+                                                            className="w-full bg-emerald-600 text-white py-3 rounded-xl font-bold shadow-md hover:bg-emerald-700 transition-colors"
+                                                        >
+                                                            Analyze Shot
+                                                        </button>
+                                                        <button
+                                                            onClick={() => handleAnalyzeVideo('lbw', 'matches')}
+                                                            className="w-full bg-blue-600 text-white py-3 rounded-xl font-bold shadow-md hover:bg-blue-700 transition-colors"
+                                                        >
+                                                            Check LBW
+                                                        </button>
+                                                    </div>
+                                                )}
                                             </div>
-                                        ))}
+                                        )}
                                     </div>
-                                </div>
+                                ) : (
+                                    <div>
+                                        <h4 className="text-[10px] font-bold text-emerald-600 uppercase tracking-widest mb-3">Detections</h4>
+                                        {selectedMatch.type === 'detection' && selectedMatch.image_path?.includes('.mp4') && getResultsArray(selectedMatch.results).length === 0 ? (
+                                            <div className="space-y-4 text-center mt-4 bg-emerald-50/50 p-6 rounded-2xl border border-emerald-100">
+                                                {isAnalyzing ? (
+                                                    <div className="flex flex-col items-center gap-3">
+                                                        <Activity className="w-8 h-8 animate-spin text-emerald-500" />
+                                                        <div className="text-emerald-700 font-bold text-sm bg-white px-4 py-2 rounded-full shadow-sm">
+                                                            {analysisProgress}
+                                                        </div>
+                                                    </div>
+                                                ) : (
+                                                    <>
+                                                        <p className="text-sm text-gray-500 font-medium mb-4">This video has not been analyzed yet.</p>
+                                                        <div className="grid grid-cols-1 gap-3">
+                                                            <button
+                                                                onClick={() => handleAnalyzeVideo('shot')}
+                                                                className="w-full bg-emerald-600 text-white py-3 rounded-xl font-bold shadow-md hover:bg-emerald-700 transition-colors"
+                                                            >
+                                                                Analyze Shot
+                                                            </button>
+                                                            <button
+                                                                onClick={() => handleAnalyzeVideo('lbw')}
+                                                                className="w-full bg-blue-600 text-white py-3 rounded-xl font-bold shadow-md hover:bg-blue-700 transition-colors"
+                                                            >
+                                                                Check LBW
+                                                            </button>
+                                                        </div>
+                                                    </>
+                                                )}
+                                            </div>
+                                        ) : (
+                                            <div className="space-y-3">
+                                                {getResultsArray(selectedMatch.results).map((res: any, idx: number) => (
+                                                    <div key={idx} className="bg-gray-50 dark:bg-zinc-800 p-4 rounded-2xl border border-emerald-100 dark:border-white/5 shadow-sm">
+                                                        <div className="flex justify-between items-start mb-2">
+                                                            <span className="font-bold text-gray-800 dark:text-white">{res.class_name || 'Detection'}</span>
+                                                            <span className="text-emerald-500 font-bold text-sm">{(res.conf * 100).toFixed(1)}%</span>
+                                                        </div>
+                                                        <div className="w-full bg-gray-200 dark:bg-zinc-700 h-1.5 rounded-full overflow-hidden">
+                                                            <div className="bg-emerald-500 h-full transition-all duration-1000" style={{ width: `${res.conf * 100}%` }} />
+                                                        </div>
+                                                    </div>
+                                                ))}
+                                            </div>
+                                        )}
+                                    </div>
+                                )}
 
                                 <div className="grid grid-cols-2 gap-4">
-                                    <div className="bg-white dark:bg-zinc-800 p-4 rounded-2xl border border-gray-100 dark:border-white/5 shadow-sm">
+                                    <div className="bg-gray-50 dark:bg-zinc-800 p-4 rounded-2xl border border-gray-100 dark:border-white/5 shadow-sm">
                                         <div className="text-[10px] font-bold text-gray-400 uppercase mb-1">Time</div>
                                         <div className="text-sm font-bold dark:text-white">{formatTime(selectedMatch.timestamp)}</div>
                                     </div>
-                                    <div className="bg-white dark:bg-zinc-800 p-4 rounded-2xl border border-gray-100 dark:border-white/5 shadow-sm">
+                                    <div className="bg-gray-50 dark:bg-zinc-800 p-4 rounded-2xl border border-gray-100 dark:border-white/5 shadow-sm">
                                         <div className="text-[10px] font-bold text-gray-400 uppercase mb-1">Date</div>
                                         <div className="text-sm font-bold dark:text-white">{formatDate(selectedMatch.timestamp)}</div>
                                     </div>
@@ -230,7 +393,7 @@ export default function MatchHistory() {
 
                             <button 
                                 onClick={() => setSelectedMatch(null)}
-                                className="mt-8 w-full bg-gray-900 dark:bg-emerald-600 text-white py-4 rounded-2xl font-bold hover:opacity-90 transition-opacity shadow-lg"
+                                className="mt-8 w-full bg-emerald-600 text-white py-4 rounded-2xl font-bold hover:bg-emerald-700 transition-colors shadow-lg"
                             >
                                 Close Details
                             </button>

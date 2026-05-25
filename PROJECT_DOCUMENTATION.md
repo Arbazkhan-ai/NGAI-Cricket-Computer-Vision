@@ -13,8 +13,8 @@ The project is split into three main modules to ensure high performance and main
 ### Data Flow
 1.  **Client** captures a frame from the webcam.
 2.  It sends the image to the **Server** (`/api/analyze`).
-3.  **Server** saves it to `/shared/uploads` and communicates with the persistent **AI Process** (`ai/inference.py`).
-4.  **AI Process** analyzes the image using YOLOv8/MediaPipe and returns JSON.
+3.  **Server** saves it to `/shared/uploads` and communicates with the persistent **AI Process** (`ai/inference.py` or LBW scripts).
+4.  **AI Process** analyzes the image using YOLOv8/MediaPipe. It evaluates ball trajectory, batsman pose, and LBW rules (bat-pad collision sequence).
 5.  **Server** saves results to **MySQL** and sends them back to the **Client**.
 
 ---
