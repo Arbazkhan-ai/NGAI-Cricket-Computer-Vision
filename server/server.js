@@ -332,11 +332,7 @@ app.post('/api/upload-video-only', upload.single('video'), (req, res) => {
     if (!req.file) {
         return res.status(400).json({ error: 'No video file provided' });
     }
-    const ext = path.extname(req.file.originalname) || '.mp4';
-    const filename = req.file.filename + ext;
-    const newPath = path.join('uploads', filename);
-    fs.renameSync(req.file.path, newPath);
-
+    const filename = req.file.filename;
     const videoUrl = `/uploads/${filename}`;
     db.query("INSERT INTO detections (image_path, results) VALUES (?, ?)", [videoUrl, "[]"], (err, results) => {
         if (err) return res.status(500).json({ error: err.message });
@@ -359,7 +355,11 @@ app.post('/api/analyze-existing', async (req, res) => {
         const videoUrl = rows[0][videoColumn];
         if (!videoUrl) return res.status(400).json({ error: 'No video associated with this record' });
 
-        const videoFilename = path.basename(videoUrl);
+        let videoFilename = path.basename(videoUrl);
+        // If the video was already processed, revert to the original filename to avoid double-overlay
+        if (videoFilename.includes('_processed')) {
+            videoFilename = videoFilename.replace('_lbw_processed', '').replace('_processed', '');
+        }
         const videoPath = path.join(__dirname, '..', 'shared', 'uploads', videoFilename);
         
         if (!fs.existsSync(videoPath)) {
@@ -519,7 +519,7 @@ app.post('/api/start_live', (req, res) => {
     
     const postData = JSON.stringify({ ip, manual_pitch, showLandmarks });
     const options = {
-        hostname: 'localhost',
+        hostname: '127.0.0.1',
         port: 8080,
         path: '/api/connect',
         method: 'POST',
@@ -534,7 +534,8 @@ app.post('/api/start_live', (req, res) => {
         response.on('data', (chunk) => { data += chunk; });
         response.on('end', () => {
             try {
-                res.json(JSON.parse(data));
+                const parsed = JSON.parse(data);
+                res.status(response.statusCode).json(parsed);
             } catch (e) {
                 res.status(500).json({ error: 'Invalid response from live service' });
             }
@@ -578,7 +579,7 @@ app.post('/api/start_lbw_live', (req, res) => {
     
     const postData = JSON.stringify({ ip, manual_pitch });
     const options = {
-        hostname: 'localhost',
+        hostname: '127.0.0.1',
         port: 8081,
         path: '/api/connect',
         method: 'POST',
@@ -593,7 +594,8 @@ app.post('/api/start_lbw_live', (req, res) => {
         response.on('data', (chunk) => { data += chunk; });
         response.on('end', () => {
             try {
-                res.json(JSON.parse(data));
+                const parsed = JSON.parse(data);
+                res.status(response.statusCode).json(parsed);
             } catch (e) {
                 res.status(500).json({ error: 'Invalid response from LBW live service' });
             }

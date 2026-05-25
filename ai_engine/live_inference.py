@@ -126,7 +126,7 @@ def connect_camera():
         return jsonify({"status": "success", "message": "Connected"})
     else:
         connection_status = "Connection Failed"
-        return jsonify({"status": "error", "message": "Failed to open camera"}), 500
+        return jsonify({"status": "error", "message": f"Failed to open camera: {video_source}"}), 500
 
 @app.route('/api/status', methods=['GET'])
 def get_status():
@@ -290,8 +290,8 @@ def generate_frames():
                     for bat in all_bats:
                         bat_cx, bat_cy = (bat[0]+bat[2])/2, (bat[1]+bat[3])/2
                         if (batsman_box[0]-50) <= bat_cx <= (batsman_box[2]+50) and (batsman_box[1]-50) <= bat_cy <= (batsman_box[3]+50):
-                            # Very strict intersection (no huge margins)
-                            if (bat[0]-5) <= bcx <= (bat[2]+5) and (bat[1]-5) <= bcy <= (bat[3]+5):
+                            # Relaxed intersection for fast moving objects and motion blur
+                            if (bat[0]-50) <= bcx <= (bat[2]+50) and (bat[1]-50) <= bcy <= (bat[3]+50):
                                 ball_touched_bat = True
                                 break
                                 

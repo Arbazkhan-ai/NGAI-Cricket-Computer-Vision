@@ -102,8 +102,8 @@ export default function MatchHistory() {
         if (!path) return '';
         const cleanPath = path.replace(/\\/g, '/');
         if (cleanPath.startsWith('http')) return cleanPath;
-        if (cleanPath.startsWith('/')) return `http://localhost:5000${cleanPath}`;
-        return `http://localhost:5000/${cleanPath}`;
+        if (cleanPath.startsWith('/')) return `http://localhost:3000${cleanPath}`;
+        return `http://localhost:3000/${cleanPath}`;
     };
 
     return (
@@ -332,34 +332,54 @@ export default function MatchHistory() {
                                 ) : (
                                     <div>
                                         <h4 className="text-[10px] font-bold text-emerald-600 uppercase tracking-widest mb-3">Detections</h4>
-                                        {selectedMatch.type === 'detection' && selectedMatch.image_path?.includes('.mp4') && getResultsArray(selectedMatch.results).length === 0 ? (
-                                            <div className="space-y-4 text-center mt-4 bg-emerald-50/50 p-6 rounded-2xl border border-emerald-100">
-                                                {isAnalyzing ? (
-                                                    <div className="flex flex-col items-center gap-3">
-                                                        <Activity className="w-8 h-8 animate-spin text-emerald-500" />
-                                                        <div className="text-emerald-700 font-bold text-sm bg-white px-4 py-2 rounded-full shadow-sm">
-                                                            {analysisProgress}
-                                                        </div>
+                                        {selectedMatch.type === 'detection' && selectedMatch.image_path?.includes('.mp4') ? (
+                                            <div className="space-y-4 mt-4">
+                                                {getResultsArray(selectedMatch.results).length > 0 && (
+                                                    <div className="space-y-3 mb-4">
+                                                        {getResultsArray(selectedMatch.results).map((res: any, idx: number) => (
+                                                            <div key={idx} className="bg-gray-50 dark:bg-zinc-800 p-4 rounded-2xl border border-emerald-100 dark:border-white/5 shadow-sm">
+                                                                <div className="flex justify-between items-start mb-2">
+                                                                    <span className="font-bold text-gray-800 dark:text-white">{res.class_name || 'Detection'}</span>
+                                                                    <span className="text-emerald-500 font-bold text-sm">{(res.conf * 100).toFixed(1)}%</span>
+                                                                </div>
+                                                                <div className="w-full bg-gray-200 dark:bg-zinc-700 h-1.5 rounded-full overflow-hidden">
+                                                                    <div className="bg-emerald-500 h-full transition-all duration-1000" style={{ width: `${res.conf * 100}%` }} />
+                                                                </div>
+                                                            </div>
+                                                        ))}
                                                     </div>
-                                                ) : (
-                                                    <>
-                                                        <p className="text-sm text-gray-500 font-medium mb-4">This video has not been analyzed yet.</p>
-                                                        <div className="grid grid-cols-1 gap-3">
-                                                            <button
-                                                                onClick={() => handleAnalyzeVideo('shot')}
-                                                                className="w-full bg-emerald-600 text-white py-3 rounded-xl font-bold shadow-md hover:bg-emerald-700 transition-colors"
-                                                            >
-                                                                Analyze Shot
-                                                            </button>
-                                                            <button
-                                                                onClick={() => handleAnalyzeVideo('lbw')}
-                                                                className="w-full bg-blue-600 text-white py-3 rounded-xl font-bold shadow-md hover:bg-blue-700 transition-colors"
-                                                            >
-                                                                Check LBW
-                                                            </button>
-                                                        </div>
-                                                    </>
                                                 )}
+                                                
+                                                <div className="bg-emerald-50/50 p-6 rounded-2xl border border-emerald-100 text-center">
+                                                    {isAnalyzing ? (
+                                                        <div className="flex flex-col items-center gap-3">
+                                                            <Activity className="w-8 h-8 animate-spin text-emerald-500" />
+                                                            <div className="text-emerald-700 font-bold text-sm bg-white px-4 py-2 rounded-full shadow-sm">
+                                                                {analysisProgress}
+                                                            </div>
+                                                        </div>
+                                                    ) : (
+                                                        <>
+                                                            <p className="text-sm text-gray-500 font-medium mb-4">
+                                                                {getResultsArray(selectedMatch.results).length > 0 ? "Start a new analysis on this video:" : "This video has not been analyzed yet."}
+                                                            </p>
+                                                            <div className="grid grid-cols-1 gap-3">
+                                                                <button
+                                                                    onClick={() => handleAnalyzeVideo('shot')}
+                                                                    className="w-full bg-emerald-600 text-white py-3 rounded-xl font-bold shadow-md hover:bg-emerald-700 transition-colors"
+                                                                >
+                                                                    Analyze Shot
+                                                                </button>
+                                                                <button
+                                                                    onClick={() => handleAnalyzeVideo('lbw')}
+                                                                    className="w-full bg-blue-600 text-white py-3 rounded-xl font-bold shadow-md hover:bg-blue-700 transition-colors"
+                                                                >
+                                                                    Check LBW
+                                                                </button>
+                                                            </div>
+                                                        </>
+                                                    )}
+                                                </div>
                                             </div>
                                         ) : (
                                             <div className="space-y-3">

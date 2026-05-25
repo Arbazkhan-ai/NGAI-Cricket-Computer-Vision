@@ -74,7 +74,7 @@ def connect_camera():
         return jsonify({"status": "success", "message": "Connected"})
     else:
         connection_status = "Connection Failed"
-        return jsonify({"status": "error", "message": "Failed to open camera"}), 500
+        return jsonify({"status": "error", "message": f"Failed to open camera: {video_source}"}), 500
 
 @app.route('/api/status', methods=['GET'])
 def get_status():

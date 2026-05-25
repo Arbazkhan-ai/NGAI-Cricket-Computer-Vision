@@ -217,7 +217,9 @@ export const startLiveDetection = async (ip: string, port: string, showLandmarks
         body: JSON.stringify({ ip, port, showLandmarks, manual_pitch: manualPitch }),
     });
     if (!response.ok) {
-        throw new Error('Failed to start live detection');
+        let errData;
+        try { errData = await response.json(); } catch(e) {}
+        throw new Error((errData && errData.message) ? errData.message : 'Failed to start live detection');
     }
     return response.json();
 };
@@ -239,7 +241,9 @@ export const startLbwLiveDetection = async (ip: string, port: string, showLandma
         body: JSON.stringify({ ip, port, showLandmarks, manual_pitch: manualPitch }),
     });
     if (!response.ok) {
-        throw new Error('Failed to start LBW live detection');
+        let errData;
+        try { errData = await response.json(); } catch(e) {}
+        throw new Error((errData && errData.message) ? errData.message : 'Failed to start LBW live detection');
     }
     return response.json();
 };

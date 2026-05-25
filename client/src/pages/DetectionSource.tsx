@@ -220,7 +220,7 @@ export default function DetectionSource() {
             });
         } catch (e) {
             console.error(e);
-            alert('Upload failed');
+            alert('Connection failed');
             setIsAnalyzing(false);
             setAnalysisProgress('');
         }
