@@ -13,6 +13,9 @@ from trajectory_prediction import TrajectoryPredictor
 from lbw_logic import LBWLogic
 from visualization import draw_analytics
 from utils import resize_frame
+import onnxruntime as ort
+import joblib
+import json
 
 # Initialize Flask App
 app = Flask(__name__)
@@ -27,6 +30,27 @@ predictor = TrajectoryPredictor()
 lbw_logic = LBWLogic()
 print("--- MODELS READY ---")
 
+# Shot Model State
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+AI_ENGINE_MODELS_DIR = os.path.join(os.path.dirname(BASE_DIR), 'ai_engine', 'models')
+SHOT_MODEL_PATH = os.path.join(AI_ENGINE_MODELS_DIR, "lstm_shot_v2.onnx")
+SCALER_PATH     = os.path.join(AI_ENGINE_MODELS_DIR, "scaler_v2.save")
+LABEL_MAP_PATH  = os.path.join(AI_ENGINE_MODELS_DIR, "label_map_v2.json")
+
+try:
+    shot_model = ort.InferenceSession(SHOT_MODEL_PATH)
+    scaler = joblib.load(SCALER_PATH)
+    with open(LABEL_MAP_PATH, "r") as f:
+        shot_classes = json.load(f)["classes"]
+except Exception as e:
+    print(f"CRITICAL: Shot Model Loading Error: {e}")
+    shot_model = None
+    shot_classes = []
+
+SEQ_LEN = 30
+CONF_THRESHOLD = 0.70
+IGNORE_LABELS  = {"Batsman"}
+
 # Camera State
 camera = None
 connection_status = "Not Connected"
@@ -39,10 +63,14 @@ pad_hit_time = None
 manual_pitch_pts = []
 session_log = []
 last_logged_pad_hit_time = None
+pose_buffer = []
+latched_shot_label = "Waiting..."
+latched_shot_conf = 0.0
+shot_display_countdown = 0
 
 @app.route('/api/connect', methods=['POST'])
 def connect_camera():
-    global camera, connection_status, current_ip, pitch_roi, stump_rect, pad_hit_time, manual_pitch_pts, session_log, last_logged_pad_hit_time
+    global camera, connection_status, current_ip, pitch_roi, stump_rect, pad_hit_time, manual_pitch_pts, session_log, last_logged_pad_hit_time, pose_buffer, latched_shot_label, latched_shot_conf, shot_display_countdown
     data = request.json
     ip = data.get('ip', '')
     manual_pitch_pts = data.get('manual_pitch', [])
@@ -53,6 +81,10 @@ def connect_camera():
     pad_hit_time = None
     session_log = []
     last_logged_pad_hit_time = None
+    pose_buffer = []
+    latched_shot_label = "Waiting..."
+    latched_shot_conf = 0.0
+    shot_display_countdown = 0
     tracker.clear()
     lbw_logic.reset()
     
@@ -103,7 +135,7 @@ def video_feed():
     return Response(generate_frames(), mimetype='multipart/x-mixed-replace; boundary=frame')
 
 def generate_frames():
-    global camera, connection_status, pitch_roi, stump_rect, pad_hit_time, current_ip, session_log, last_logged_pad_hit_time
+    global camera, connection_status, pitch_roi, stump_rect, pad_hit_time, current_ip, session_log, last_logged_pad_hit_time, pose_buffer, latched_shot_label, latched_shot_conf, shot_display_countdown, shot_model, scaler, shot_classes
     prev_time = time.time()
 
     while True:
@@ -163,6 +195,39 @@ def generate_frames():
                 else:
                     bx1, by1, bx2, by2 = batsman_data['bbox']
                     pad_zone = (bx1, int(by1 + (by2-by1)*0.5), bx2, by2)
+                    
+                # Shot Detection Logic
+                if pose_results and pose_results.pose_landmarks and shot_model:
+                    bx1, by1, bx2, by2 = pose_offset if pose_offset else (0, 0, frame.shape[1], frame.shape[0])
+                    cw, ch = bx2-bx1, by2-by1
+                    h_full, w_full = frame.shape[:2]
+                    feat = []
+                    for p in pose_results.pose_landmarks.landmark:
+                        abs_x = p.x * cw + bx1
+                        abs_y = p.y * ch + by1
+                        feat.extend([abs_x / w_full, abs_y / h_full, p.z, p.visibility])
+                        
+                    pose_buffer.append(feat)
+                    if len(pose_buffer) > SEQ_LEN: pose_buffer.pop(0)
+                    
+                    if len(pose_buffer) == SEQ_LEN:
+                        X = np.array(pose_buffer, dtype=np.float32)
+                        X_scaled = scaler.transform(X).reshape(1, SEQ_LEN, -1).astype(np.float32)
+                        ort_inputs = {shot_model.get_inputs()[0].name: X_scaled}
+                        preds = shot_model.run(None, ort_inputs)[0]
+                        idx = np.argmax(preds[0])
+                        if shot_classes[idx] not in IGNORE_LABELS and preds[0][idx] >= CONF_THRESHOLD:
+                            latched_shot_label = shot_classes[idx]
+                            latched_shot_conf = float(preds[0][idx])
+                            shot_display_countdown = 90
+                            
+                            session_log.append({
+                                "time": time.strftime("%I:%M:%S %p"),
+                                "type": "shot",
+                                "label": latched_shot_label,
+                                "conf": latched_shot_conf
+                            })
+                            pose_buffer = [] # Reset to avoid spam
 
             # 4. Track Ball
             trajectory = tracker.update(ball_center)
@@ -208,6 +273,10 @@ def generate_frames():
             # 8. Visualization
             if pose_results:
                 pose_detector.draw_skeleton(frame, pose_results, offset=pose_offset)
+                
+            if shot_display_countdown > 0:
+                shot_display_countdown -= 1
+                cv2.putText(frame, f"SHOT: {latched_shot_label} ({latched_shot_conf*100:.1f}%)", (30, 140), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 255, 100), 2)
 
             vis_impact_point = None if is_delay_active else lbw_logic.impact_point
             vis_first_contact = None if is_delay_active else lbw_logic.first_contact

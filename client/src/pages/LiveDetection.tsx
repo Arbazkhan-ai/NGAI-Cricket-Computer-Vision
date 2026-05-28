@@ -1,14 +1,14 @@
 
 import { useEffect, useState, useRef } from 'react';
 import { useLocation, useNavigate } from 'react-router-dom';
-import { StopCircle, ArrowLeft, Activity, PlayCircle } from 'lucide-react';
+import { StopCircle, ArrowLeft, Activity, PlayCircle, Crosshair } from 'lucide-react';
 import { startLiveDetection, stopLiveDetection, startLbwLiveDetection, stopLbwLiveDetection, saveMatch } from '../services/api';
 import { useGame } from '../context/GameContext';
 
 export default function LiveDetection() {
     const location = useLocation();
     const navigate = useNavigate();
-    const { ipAddress, port, showLandmarks, analysisType, manualPitch } = location.state || {};
+    const { ipAddress, port, showLandmarks, analysisType, manualPitch, initialSetup } = location.state || {};
     const [status, setStatus] = useState('Initializing...');
     const [streamError, setStreamError] = useState(false);
     const [countdown, setCountdown] = useState<number | null>(null);
@@ -16,49 +16,47 @@ export default function LiveDetection() {
     const [lbwDecision, setLbwDecision] = useState<string | null>(null);
     const [streamKey, setStreamKey] = useState(Date.now());
     const [error, setError] = useState<string | null>(null);
+    const [setupPhase, setSetupPhase] = useState<'pending' | 'manual' | 'running'>(
+        initialSetup === 'auto' ? 'running' : (initialSetup === 'manual' ? 'manual' : (analysisType === 'lbw' ? 'pending' : 'running'))
+    );
+    const [manualPitchPts, setManualPitchPts] = useState<{x: number, y: number}[]>([]);
+    const overlayRef = useRef<HTMLCanvasElement>(null);
 
     const { rules, gameActive, score, setScore } = useGame();
     const prevBackendScoreRef = useRef(0);
     const startTimeRef = useRef(Date.now());
 
-    useEffect(() => {
-        let mounted = true;
+    const runService = async (overridePitch?: number[][]) => {
+        try {
+            const fetchPort = analysisType === 'lbw' ? '8081' : '8080';
+            await fetch(`http://127.0.0.1:${fetchPort}/reset_score`, { method: 'POST' }).catch(() => {});
+            if (gameActive) setScore(0);
+            setLiveScore(0);
+            prevBackendScoreRef.current = 0;
+            startTimeRef.current = Date.now();
 
-        const start = async () => {
-            try {
-                // Reset backend score when starting a new session
-                const fetchPort = analysisType === 'lbw' ? '8081' : '8080';
-                await fetch(`http://127.0.0.1:${fetchPort}/reset_score`, { method: 'POST' }).catch(() => {});
-                if (gameActive) setScore(0);
-                setLiveScore(0);
-                prevBackendScoreRef.current = 0;
-                startTimeRef.current = Date.now();
-
-                setStatus('Starting Detection Service...');
-                if (analysisType === 'lbw') {
-                    await startLbwLiveDetection(ipAddress, port, showLandmarks, manualPitch);
-                } else {
-                    await startLiveDetection(ipAddress, port, showLandmarks, manualPitch);
-                }
-                if (mounted) {
-                    setStatus('Running');
-                    setCountdown(3);
-                }
-            } catch (err: any) {
-                if (mounted) {
-                    setError(err.message || 'Failed to start detection');
-                    setStatus('Error');
-                }
+            setStatus('Starting Detection Service...');
+            if (analysisType === 'lbw') {
+                await startLbwLiveDetection(ipAddress, port, showLandmarks, overridePitch !== undefined ? overridePitch : manualPitch);
+            } else {
+                await startLiveDetection(ipAddress, port, showLandmarks, manualPitch);
             }
-        };
+            setStatus('Running');
+            setCountdown(3);
+            setStreamKey(Date.now());
+            setStreamError(false);
+        } catch (err: any) {
+            setError(err.message || 'Failed to start detection');
+            setStatus('Error');
+        }
+    };
 
-        start();
-
-        return () => {
-            mounted = false;
-            // Optional: Auto-stop on unmount?
-            // stopLiveDetection().catch(console.error);
-        };
+    useEffect(() => {
+        if (setupPhase === 'pending') {
+            return; // Wait for user setup choice
+        }
+        // If initialSetup was auto or manual, runService will just launch the preview or auto detection
+        runService();
     }, [ipAddress, port, showLandmarks]);
 
     useEffect(() => {
@@ -111,6 +109,77 @@ export default function LiveDetection() {
 
         return () => clearInterval(interval);
     }, [status, gameActive, rules, setScore]);
+    const handleOverlayClick = (e: React.MouseEvent<HTMLCanvasElement>) => {
+        if (setupPhase !== 'manual' || manualPitchPts.length >= 4) return;
+        const canvas = overlayRef.current;
+        if (!canvas) return;
+        const rect = canvas.getBoundingClientRect();
+        
+        const scaleX = canvas.width / rect.width;
+        const scaleY = canvas.height / rect.height;
+        
+        const x = (e.clientX - rect.left) * scaleX;
+        const y = (e.clientY - rect.top) * scaleY;
+        
+        setManualPitchPts(prev => {
+            if (prev.length < 4) return [...prev, {x, y}];
+            return prev;
+        });
+    };
+
+    const applyManualPitch = async () => {
+        setSetupPhase('running');
+        const ptsArray = manualPitchPts.map(p => [Math.round(p.x), Math.round(p.y)]);
+        await stopLbwLiveDetection();
+        await runService(ptsArray);
+    };
+
+    const clearPitchPts = () => setManualPitchPts([]);
+
+    const handleAutoPitch = async () => {
+        setSetupPhase('running');
+        setManualPitchPts([]);
+        await runService(undefined);
+    };
+
+    const handleManualMode = async () => {
+        setSetupPhase('manual');
+        setManualPitchPts([]);
+        await runService(undefined); // Start preview stream
+    };
+
+    useEffect(() => {
+        if (setupPhase === 'manual' && overlayRef.current) {
+            const canvas = overlayRef.current;
+            const ctx = canvas.getContext('2d');
+            if (ctx) {
+                ctx.clearRect(0, 0, canvas.width, canvas.height);
+                ctx.fillStyle = 'yellow';
+                manualPitchPts.forEach((pt, idx) => {
+                    ctx.beginPath();
+                    ctx.arc(pt.x, pt.y, 6, 0, Math.PI * 2);
+                    ctx.fill();
+                    ctx.fillStyle = 'black';
+                    ctx.fillText(`${idx + 1}`, pt.x - 4, pt.y + 4);
+                    ctx.fillStyle = 'yellow';
+                });
+                if (manualPitchPts.length > 1) {
+                    ctx.strokeStyle = 'yellow';
+                    ctx.lineWidth = 2;
+                    ctx.beginPath();
+                    ctx.moveTo(manualPitchPts[0].x, manualPitchPts[0].y);
+                    for (let i=1; i<manualPitchPts.length; i++) {
+                        ctx.lineTo(manualPitchPts[i].x, manualPitchPts[i].y);
+                    }
+                    if (manualPitchPts.length === 4) {
+                        ctx.closePath();
+                    }
+                    ctx.stroke();
+                }
+            }
+        }
+    }, [manualPitchPts, setupPhase]);
+
     const handleStop = async () => {
         try {
             // Save the match before stopping
@@ -151,26 +220,14 @@ export default function LiveDetection() {
     };
 
     const handleReplay = async () => {
-        try {
-            setStatus('Restarting Detection Service...');
-            if (analysisType === 'lbw') {
-                await startLbwLiveDetection(ipAddress, port, showLandmarks, manualPitch);
-            } else {
-                await startLiveDetection(ipAddress, port, showLandmarks, manualPitch);
-            }
-            setStatus('Running');
-            setCountdown(3);
-            const fetchPort = analysisType === 'lbw' ? '8081' : '8080';
-            await fetch(`http://127.0.0.1:${fetchPort}/reset_score`, { method: 'POST' }).catch(() => {});
-            if (gameActive) setScore(0);
-            setLiveScore(0);
-            prevBackendScoreRef.current = 0;
-            if (analysisType === 'lbw') setLbwDecision(null);
-            setStreamKey(Date.now());
-            setStreamError(false);
-        } catch (err: any) {
-            setError(err.message || 'Failed to restart detection');
-            setStatus('Error');
+        setSetupPhase('pending');
+        setStatus('Initializing...');
+        setCountdown(null);
+        if (analysisType === 'lbw') {
+            await stopLbwLiveDetection().catch(()=>{});
+        } else {
+            await stopLiveDetection().catch(()=>{});
+            runService(); // For non-lbw just restart directly
         }
     };
 
@@ -228,7 +285,30 @@ export default function LiveDetection() {
 
             {/* Live Video Feed */}
             <div className="bg-white rounded-3xl border border-emerald-100 p-8 shadow-sm flex flex-col items-center">
-                {status === 'Running' && countdown === -1 && !streamError ? (
+                {setupPhase === 'pending' ? (
+                    <div className="w-full max-w-2xl bg-emerald-50 rounded-2xl p-10 border border-emerald-200 shadow-sm text-center">
+                        <Activity className="w-16 h-16 text-emerald-500 mx-auto mb-4 animate-bounce" />
+                        <h2 className="text-3xl font-black text-emerald-800 mb-4">Start LBW Detection</h2>
+                        <p className="text-lg text-emerald-600 mb-8">Please select how you want to detect the cricket pitch before the camera starts.</p>
+                        
+                        <div className="flex flex-col sm:flex-row gap-6 justify-center">
+                            <button 
+                                onClick={handleAutoPitch} 
+                                className="px-8 py-4 bg-blue-500 text-white font-bold rounded-2xl hover:bg-blue-600 transition-all shadow-lg shadow-blue-200 hover:-translate-y-1"
+                            >
+                                <div className="flex items-center gap-2 text-lg mb-1"><Activity className="w-5 h-5"/> Auto Detect</div>
+                                <div className="text-xs text-blue-100 font-normal">AI will automatically find the pitch</div>
+                            </button>
+                            <button 
+                                onClick={handleManualMode} 
+                                className="px-8 py-4 bg-emerald-600 text-white font-bold rounded-2xl hover:bg-emerald-700 transition-all shadow-lg shadow-emerald-200 hover:-translate-y-1"
+                            >
+                                <div className="flex items-center gap-2 text-lg mb-1"><Crosshair className="w-5 h-5"/> Manual Setup</div>
+                                <div className="text-xs text-emerald-100 font-normal">You will click 4 points to draw the pitch</div>
+                            </button>
+                        </div>
+                    </div>
+                ) : status === 'Running' && countdown === -1 && !streamError ? (
                     <div className="w-full max-w-4xl relative rounded-2xl overflow-hidden shadow-lg border-4 border-emerald-500/20 bg-black aspect-video flex items-center justify-center">
                         <img
                             src={`http://127.0.0.1:${analysisType === 'lbw' ? '8081' : '8080'}/video_feed?t=${streamKey}`}
@@ -238,6 +318,17 @@ export default function LiveDetection() {
                                 console.error("Stream connection error", e);
                                 setStreamError(true);
                             }}
+                            onLoad={(e) => {
+                                if (overlayRef.current) {
+                                    overlayRef.current.width = e.currentTarget.naturalWidth || 1000;
+                                    overlayRef.current.height = e.currentTarget.naturalHeight || 750;
+                                }
+                            }}
+                        />
+                        <canvas
+                            ref={overlayRef}
+                            onClick={handleOverlayClick}
+                            className={`absolute inset-0 w-full h-full ${setupPhase === 'manual' ? 'z-10 pointer-events-auto cursor-crosshair' : 'pointer-events-none opacity-0'}`}
                         />
                     </div>
                 ) : (
@@ -287,9 +378,39 @@ export default function LiveDetection() {
                     </div>
                 )}
 
+                {setupPhase === 'manual' && analysisType === 'lbw' && (
+                    <div className="mt-6 w-full max-w-2xl bg-emerald-50 rounded-2xl p-6 border border-emerald-200 shadow-sm text-center">
+                        <h4 className="font-bold text-emerald-800 text-xl mb-2">Draw Custom Pitch</h4>
+                        <p className="text-md text-emerald-700 mb-4">Click 4 points on the live video above to manually draw the pitch.</p>
+                        
+                        <div className="flex flex-wrap gap-4 justify-center items-center">
+                            <button 
+                                onClick={clearPitchPts} 
+                                disabled={manualPitchPts.length === 0}
+                                className="px-6 py-3 bg-gray-200 text-gray-700 font-bold rounded-xl hover:bg-gray-300 transition-colors disabled:opacity-50"
+                            >
+                                Clear Points
+                            </button>
+                            <button 
+                                onClick={applyManualPitch} 
+                                disabled={manualPitchPts.length !== 4} 
+                                className="px-6 py-3 bg-emerald-600 text-white font-bold rounded-xl hover:bg-emerald-700 transition-colors disabled:opacity-50 disabled:cursor-not-allowed shadow-md shadow-emerald-200"
+                            >
+                                Apply Custom Pitch
+                            </button>
+                            <button 
+                                onClick={handleAutoPitch} 
+                                className="px-6 py-3 bg-red-100 text-red-600 font-bold rounded-xl hover:bg-red-200 transition-colors"
+                            >
+                                Cancel & Use Auto
+                            </button>
+                        </div>
+                    </div>
+                )}
+
                 {/* Controls */}
                 <div className="mt-8 flex flex-col items-center w-full">
-                    <div className="flex gap-4">
+                    <div className="flex gap-4 flex-wrap justify-center">
                         <button
                             onClick={() => navigate('/source')}
                             className="text-gray-500 hover:text-emerald-600 font-medium flex items-center gap-2 px-6 py-3 rounded-xl hover:bg-emerald-50 transition-colors"
@@ -303,8 +424,27 @@ export default function LiveDetection() {
                             className="bg-blue-500 hover:bg-blue-600 text-white px-8 py-3 rounded-xl font-bold shadow-lg shadow-blue-200 transition-all active:scale-95 flex items-center gap-2"
                         >
                             <PlayCircle className="w-5 h-5" />
-                            Replay Video
+                            Restart Detection
                         </button>
+
+                        {analysisType === 'lbw' && setupPhase === 'running' && (
+                            <button
+                                onClick={handleManualMode}
+                                className="bg-emerald-500 hover:bg-emerald-600 text-white px-8 py-3 rounded-xl font-bold shadow-lg shadow-emerald-200 transition-all active:scale-95 flex items-center gap-2"
+                            >
+                                <Crosshair className="w-5 h-5" />
+                                Redraw Manual Pitch
+                            </button>
+                        )}
+                        {analysisType === 'lbw' && setupPhase === 'running' && manualPitchPts.length > 0 && (
+                            <button
+                                onClick={handleAutoPitch}
+                                className="bg-purple-500 hover:bg-purple-600 text-white px-8 py-3 rounded-xl font-bold shadow-lg shadow-purple-200 transition-all active:scale-95 flex items-center gap-2"
+                            >
+                                <Activity className="w-5 h-5" />
+                                Switch to Auto
+                            </button>
+                        )}
 
                         <button
                             onClick={handleStop}

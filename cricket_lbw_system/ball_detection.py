@@ -45,13 +45,14 @@ class Detector:
             cx, cy = (x1 + x2) // 2, (y1 + y2) // 2
 
             # Filter by Pitch (Manual Polygon takes priority, then Auto ROI)
+            # Add a generous margin so we don't accidentally filter out the batsman
             if manual_pitch and len(manual_pitch) == 4:
                 pts = np.array(manual_pitch, np.int32)
-                if cv2.pointPolygonTest(pts, (float(cx), float(cy)), False) < 0:
+                if cv2.pointPolygonTest(pts, (float(cx), float(cy)), True) < -250:
                     continue
             elif pitch_roi:
                 px1, py1, px2, py2 = pitch_roi
-                if not (px1 <= cx <= px2 and py1 <= cy <= py2):
+                if not (px1 - 250 <= cx <= px2 + 250 and py1 - 250 <= cy <= py2 + 250):
                     continue
 
             # Class mapping: 0: Ball, 1: Bat, 2: Batsman
