@@ -72,32 +72,9 @@ def draw_analytics(frame, ball_data, objects, trajectory, predicted_path, impact
     for pt in predicted_path:
         cv2.circle(frame, pt, 2, (0, 255, 0), -1)
         
-    # 7. Draw Impact/Collision Points
-    if impact_point:
-        color = (0, 255, 0) if first_contact == "BAT" else (0, 0, 255)
-        label = "BAT CONTACT!" if first_contact == "BAT" else "PAD CONTACT!"
-        
-        # Draw a larger, more prominent impact marker
-        cv2.circle(frame, impact_point, 12, (255, 255, 255), -1)
-        cv2.circle(frame, impact_point, 10, color, -1)
-        cv2.putText(frame, label, (impact_point[0] + 15, impact_point[1]), cv2.FONT_HERSHEY_SIMPLEX, 0.8, color, 3)
-        
-        # Add a top banner for collision
-        banner_color = (0, 150, 0) if first_contact == "BAT" else (0, 0, 200)
-        # Larger banner
-        cv2.rectangle(frame, (frame.shape[1]//2 - 200, 10), (frame.shape[1]//2 + 200, 80), (0,0,0), -1)
-        cv2.rectangle(frame, (frame.shape[1]//2 - 200, 10), (frame.shape[1]//2 + 200, 80), banner_color, 4)
-        cv2.putText(frame, label, (frame.shape[1]//2 - 180, 60), cv2.FONT_HERSHEY_SIMPLEX, 1.4, (255, 255, 255), 4)
+    # 7. Draw Impact/Collision Points (Moved to UI)
 
-    # 8. Draw Decision & Status
-    # decision_box
-    cv2.rectangle(frame, (20, 20), (350, 110), (0, 0, 0), -1)
-    cv2.rectangle(frame, (20, 20), (350, 110), (255, 255, 255), 2)
-    
-    color = (0, 0, 255) if "OUT" in decision and "NOT" not in decision else (0, 255, 0)
-    if decision == "PENDING" or decision == "TRACKING...": color = (255, 255, 0)
-    
-    cv2.putText(frame, f"DECISION: {decision}", (40, 60), cv2.FONT_HERSHEY_SIMPLEX, 0.8, color, 2)
-    cv2.putText(frame, f"FPS: {int(fps)}", (40, 95), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 1)
+    # 8. Draw Status (FPS only, decision moved to UI)
+    cv2.putText(frame, f"FPS: {int(fps)}", (10, 20), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 1)
     
     return frame

@@ -14,10 +14,12 @@ export default function LiveDetection() {
     const [countdown, setCountdown] = useState<number | null>(null);
     const [liveScore, setLiveScore] = useState(0);
     const [lbwDecision, setLbwDecision] = useState<string | null>(null);
+    const [firstContact, setFirstContact] = useState<string | null>(null);
+    const [shotType, setShotType] = useState<{label: string, conf: number} | null>(null);
     const [streamKey, setStreamKey] = useState(Date.now());
     const [error, setError] = useState<string | null>(null);
-    const [setupPhase, setSetupPhase] = useState<'pending' | 'manual' | 'running'>(
-        initialSetup === 'auto' ? 'running' : (initialSetup === 'manual' ? 'manual' : (analysisType === 'lbw' ? 'pending' : 'running'))
+    const [setupPhase, setSetupPhase] = useState<'manual' | 'running'>(
+        initialSetup === 'manual' ? 'manual' : 'running'
     );
     const [manualPitchPts, setManualPitchPts] = useState<{x: number, y: number}[]>([]);
     const overlayRef = useRef<HTMLCanvasElement>(null);
@@ -25,10 +27,12 @@ export default function LiveDetection() {
     const { rules, gameActive, score, setScore } = useGame();
     const prevBackendScoreRef = useRef(0);
     const startTimeRef = useRef(Date.now());
+    const pendingContactRef = useRef<string | null>(null);
+    const pendingShotRef = useRef<string | null>(null);
 
     const runService = async (overridePitch?: number[][]) => {
         try {
-            const fetchPort = analysisType === 'lbw' ? '8081' : '8080';
+            const fetchPort = (analysisType === 'lbw' || analysisType === 'unified') ? '8081' : '8080';
             await fetch(`http://127.0.0.1:${fetchPort}/reset_score`, { method: 'POST' }).catch(() => {});
             if (gameActive) setScore(0);
             setLiveScore(0);
@@ -36,10 +40,15 @@ export default function LiveDetection() {
             startTimeRef.current = Date.now();
 
             setStatus('Starting Detection Service...');
-            if (analysisType === 'lbw') {
-                await startLbwLiveDetection(ipAddress, port, showLandmarks, overridePitch !== undefined ? overridePitch : manualPitch);
+            let formattedIp = ipAddress;
+            if (typeof ipAddress === 'string' && !ipAddress.startsWith('http') && !ipAddress.startsWith('rtsp') && !ipAddress.startsWith('/') && !ipAddress.startsWith('uploads') && port && ipAddress !== '0') {
+                formattedIp = `http://${ipAddress}:${port}/video`;
+            }
+
+            if (analysisType === 'lbw' || analysisType === 'unified') {
+                await startLbwLiveDetection(formattedIp, port, showLandmarks, overridePitch !== undefined ? overridePitch : manualPitch);
             } else {
-                await startLiveDetection(ipAddress, port, showLandmarks, manualPitch);
+                await startLiveDetection(formattedIp, port, showLandmarks, manualPitch);
             }
             setStatus('Running');
             setCountdown(3);
@@ -52,10 +61,7 @@ export default function LiveDetection() {
     };
 
     useEffect(() => {
-        if (setupPhase === 'pending') {
-            return; // Wait for user setup choice
-        }
-        // If initialSetup was auto or manual, runService will just launch the preview or auto detection
+        // Run service immediately on mount
         runService();
     }, [ipAddress, port, showLandmarks]);
 
@@ -81,12 +87,27 @@ export default function LiveDetection() {
 
         const interval = setInterval(async () => {
             try {
-                const fetchPort = analysisType === 'lbw' ? '8081' : '8080';
+                const fetchPort = (analysisType === 'lbw' || analysisType === 'unified') ? '8081' : '8080';
                 const res = await fetch(`http://127.0.0.1:${fetchPort}/get_score`);
                 const data = await res.json();
                 
-                if (analysisType === 'lbw') {
+                if (analysisType === 'lbw' || analysisType === 'unified') {
                     setLbwDecision(data.decision);
+                    if (data.contact && data.contact !== pendingContactRef.current) {
+                        pendingContactRef.current = data.contact;
+                        setFirstContact('Analyzing...');
+                        setTimeout(() => {
+                            setFirstContact(data.contact);
+                        }, 5000);
+                    }
+                }
+                
+                if (data.shot_label && data.shot_label !== pendingShotRef.current) {
+                    pendingShotRef.current = data.shot_label;
+                    setShotType({ label: 'Analyzing...', conf: 0 });
+                    setTimeout(() => {
+                        setShotType({ label: data.shot_label, conf: data.shot_conf });
+                    }, 12000);
                 }
                 
                 if (data.score > prevBackendScoreRef.current) {
@@ -130,7 +151,6 @@ export default function LiveDetection() {
     const applyManualPitch = async () => {
         setSetupPhase('running');
         const ptsArray = manualPitchPts.map(p => [Math.round(p.x), Math.round(p.y)]);
-        await stopLbwLiveDetection();
         await runService(ptsArray);
     };
 
@@ -191,7 +211,7 @@ export default function LiveDetection() {
                 
                 let details: any[] = [];
                 try {
-                    const fetchPort = analysisType === 'lbw' ? '8081' : '8080';
+                    const fetchPort = (analysisType === 'lbw' || analysisType === 'unified') ? '8081' : '8080';
                     const res = await fetch(`http://127.0.0.1:${fetchPort}/get_log`);
                     const data = await res.json();
                     details = data.log || [];
@@ -208,27 +228,24 @@ export default function LiveDetection() {
                 }).catch((e: any) => console.error("Could not save match:", e));
             }
 
-            if (analysisType === 'lbw') {
+            if (analysisType === 'lbw' || analysisType === 'unified') {
                 await stopLbwLiveDetection();
             } else {
                 await stopLiveDetection();
             }
-            navigate('/match-history');
+            setStatus('Stopped');
+            const isVideo = typeof ipAddress === 'string' && (ipAddress.includes('/uploads/') || ipAddress.includes('uploads/'));
+            navigate('/source', { state: { method: isVideo ? 'video' : 'live' } });
         } catch (err) {
             console.error('Failed to stop', err);
         }
     };
 
     const handleReplay = async () => {
-        setSetupPhase('pending');
+        setSetupPhase('running');
         setStatus('Initializing...');
         setCountdown(null);
-        if (analysisType === 'lbw') {
-            await stopLbwLiveDetection().catch(()=>{});
-        } else {
-            await stopLiveDetection().catch(()=>{});
-            runService(); // For non-lbw just restart directly
-        }
+        runService();
     };
 
     return (
@@ -257,26 +274,56 @@ export default function LiveDetection() {
                 </div>
 
                 {/* Score Panel (If Game Active) */}
-                <div className="mt-6 flex items-center gap-6 animate-in slide-in-from-top-4 duration-700">
-                    {analysisType === 'lbw' ? (
-                        <div className="bg-white/10 backdrop-blur-md rounded-2xl p-4 border border-white/20 flex-1">
-                            <div className="text-emerald-100 text-xs font-bold uppercase tracking-wider mb-1">LBW Decision</div>
-                            <div className={`text-3xl font-black ${lbwDecision === 'OUT' ? 'text-red-400' : 'text-white'}`}>
-                                {lbwDecision || 'Waiting...'}
+                <div className="mt-6 flex flex-wrap items-center gap-6 animate-in slide-in-from-top-4 duration-700">
+                    {(analysisType === 'lbw' || analysisType === 'unified') && (
+                        <>
+                            <div className="bg-white/10 backdrop-blur-md rounded-2xl p-4 border border-white/20 flex-1 min-w-[200px]">
+                                <div className="text-emerald-100 text-xs font-bold uppercase tracking-wider mb-1">LBW Decision</div>
+                                <div className={`text-3xl font-black ${lbwDecision === 'OUT' ? 'text-red-400' : 'text-white'}`}>
+                                    {lbwDecision || 'Waiting...'}
+                                </div>
+                            </div>
+                            
+                            <div className="bg-white/10 backdrop-blur-md rounded-2xl p-4 border border-white/20 flex-1 min-w-[200px]">
+                                <div className="text-emerald-100 text-xs font-bold uppercase tracking-wider mb-1">Impact Point</div>
+                                <div className={`text-3xl font-black ${firstContact === 'BAT' ? 'text-green-400' : firstContact === 'PAD' ? 'text-red-400' : firstContact === 'Analyzing...' ? 'text-yellow-400 animate-pulse' : 'text-gray-400'}`}>
+                                    {firstContact || '-'}
+                                </div>
+                            </div>
+                        </>
+                    )}
+                    
+                    {(analysisType === 'unified' || analysisType === 'shot') && (
+                        <div className="bg-white/10 backdrop-blur-md rounded-2xl p-4 border border-white/20 flex-1 min-w-[200px]">
+                            <div className="text-emerald-100 text-xs font-bold uppercase tracking-wider mb-1">Detected Shot</div>
+                            <div className="text-3xl font-black text-blue-300">
+                                {shotType ? (
+                                    shotType.label === 'Analyzing...' ? (
+                                        <span className="text-yellow-400 animate-pulse">Analyzing...</span>
+                                    ) : (
+                                        <span>{shotType.label} <span className="text-lg opacity-70">({Math.round(shotType.conf * 100)}%)</span></span>
+                                    )
+                                ) : (
+                                    <span className="text-gray-400">-</span>
+                                )}
                             </div>
                         </div>
-                    ) : (
-                        <div className="bg-white/10 backdrop-blur-md rounded-2xl p-4 border border-white/20 flex-1">
+                    )}
+
+                    {gameActive && (
+                        <div className="bg-white/10 backdrop-blur-md rounded-2xl p-4 border border-white/20 flex-1 min-w-[200px]">
                             <div className="text-emerald-100 text-xs font-bold uppercase tracking-wider mb-1">Game Score</div>
-                            <div className="text-4xl font-black">{gameActive ? score : liveScore}</div>
+                            <div className="text-4xl font-black">{score}</div>
                         </div>
                     )}
-                    <div className="bg-white/10 backdrop-blur-md rounded-2xl p-4 border border-white/20 flex-1">
-                        <div className="text-emerald-100 text-xs font-bold uppercase tracking-wider mb-1">Active Rules</div>
-                        <div className="text-xl font-bold">
-                            {gameActive ? rules.filter(r => r.active).map(r => r.title).join(', ') || 'None' : 'Standard Game'}
+                    {gameActive && (
+                        <div className="bg-white/10 backdrop-blur-md rounded-2xl p-4 border border-white/20 flex-1">
+                            <div className="text-emerald-100 text-xs font-bold uppercase tracking-wider mb-1">Active Rules</div>
+                            <div className="text-xl font-bold">
+                                {rules.filter(r => r.active).map(r => r.title).join(', ') || 'None'}
+                            </div>
                         </div>
-                    </div>
+                    )}
                 </div>
 
                 {/* Decoration */}
@@ -285,33 +332,10 @@ export default function LiveDetection() {
 
             {/* Live Video Feed */}
             <div className="bg-white rounded-3xl border border-emerald-100 p-8 shadow-sm flex flex-col items-center">
-                {setupPhase === 'pending' ? (
-                    <div className="w-full max-w-2xl bg-emerald-50 rounded-2xl p-10 border border-emerald-200 shadow-sm text-center">
-                        <Activity className="w-16 h-16 text-emerald-500 mx-auto mb-4 animate-bounce" />
-                        <h2 className="text-3xl font-black text-emerald-800 mb-4">Start LBW Detection</h2>
-                        <p className="text-lg text-emerald-600 mb-8">Please select how you want to detect the cricket pitch before the camera starts.</p>
-                        
-                        <div className="flex flex-col sm:flex-row gap-6 justify-center">
-                            <button 
-                                onClick={handleAutoPitch} 
-                                className="px-8 py-4 bg-blue-500 text-white font-bold rounded-2xl hover:bg-blue-600 transition-all shadow-lg shadow-blue-200 hover:-translate-y-1"
-                            >
-                                <div className="flex items-center gap-2 text-lg mb-1"><Activity className="w-5 h-5"/> Auto Detect</div>
-                                <div className="text-xs text-blue-100 font-normal">AI will automatically find the pitch</div>
-                            </button>
-                            <button 
-                                onClick={handleManualMode} 
-                                className="px-8 py-4 bg-emerald-600 text-white font-bold rounded-2xl hover:bg-emerald-700 transition-all shadow-lg shadow-emerald-200 hover:-translate-y-1"
-                            >
-                                <div className="flex items-center gap-2 text-lg mb-1"><Crosshair className="w-5 h-5"/> Manual Setup</div>
-                                <div className="text-xs text-emerald-100 font-normal">You will click 4 points to draw the pitch</div>
-                            </button>
-                        </div>
-                    </div>
-                ) : status === 'Running' && countdown === -1 && !streamError ? (
+                {status === 'Running' && countdown === -1 && !streamError ? (
                     <div className="w-full max-w-4xl relative rounded-2xl overflow-hidden shadow-lg border-4 border-emerald-500/20 bg-black aspect-video flex items-center justify-center">
                         <img
-                            src={`http://127.0.0.1:${analysisType === 'lbw' ? '8081' : '8080'}/video_feed?t=${streamKey}`}
+                            src={`http://127.0.0.1:${(analysisType === 'lbw' || analysisType === 'unified') ? '8081' : '8080'}/video_feed?t=${streamKey}`}
                             alt="Live Detection Feed"
                             className="w-full h-full object-contain"
                             onError={(e) => {
@@ -378,7 +402,7 @@ export default function LiveDetection() {
                     </div>
                 )}
 
-                {setupPhase === 'manual' && analysisType === 'lbw' && (
+                {setupPhase === 'manual' && (
                     <div className="mt-6 w-full max-w-2xl bg-emerald-50 rounded-2xl p-6 border border-emerald-200 shadow-sm text-center">
                         <h4 className="font-bold text-emerald-800 text-xl mb-2">Draw Custom Pitch</h4>
                         <p className="text-md text-emerald-700 mb-4">Click 4 points on the live video above to manually draw the pitch.</p>
@@ -427,16 +451,16 @@ export default function LiveDetection() {
                             Restart Detection
                         </button>
 
-                        {analysisType === 'lbw' && setupPhase === 'running' && (
+                        {setupPhase === 'running' && (
                             <button
                                 onClick={handleManualMode}
                                 className="bg-emerald-500 hover:bg-emerald-600 text-white px-8 py-3 rounded-xl font-bold shadow-lg shadow-emerald-200 transition-all active:scale-95 flex items-center gap-2"
                             >
                                 <Crosshair className="w-5 h-5" />
-                                Redraw Manual Pitch
+                                Draw Manual Pitch
                             </button>
                         )}
-                        {analysisType === 'lbw' && setupPhase === 'running' && manualPitchPts.length > 0 && (
+                        {setupPhase === 'running' && manualPitchPts.length > 0 && (
                             <button
                                 onClick={handleAutoPitch}
                                 className="bg-purple-500 hover:bg-purple-600 text-white px-8 py-3 rounded-xl font-bold shadow-lg shadow-purple-200 transition-all active:scale-95 flex items-center gap-2"

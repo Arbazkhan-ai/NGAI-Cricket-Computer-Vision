@@ -99,8 +99,14 @@ def connect_camera():
         video_source = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), 'shared', ip)
 
     print(f"Connecting to: {video_source}")
-    camera = cv2.VideoCapture(video_source)
-    if camera.isOpened():
+    try:
+        os.environ["OPENCV_FFMPEG_CAPTURE_OPTIONS"] = "timeout;5000"
+        camera = cv2.VideoCapture(video_source)
+    except Exception as e:
+        print(f"OpenCV Error opening camera: {e}")
+        camera = None
+
+    if camera and camera.isOpened():
         connection_status = "Connected"
         current_ip = ip
         return jsonify({"status": "success", "message": "Connected"})
@@ -124,7 +130,14 @@ def reset_score():
 
 @app.route('/get_score')
 def get_score():
-    return jsonify({"score": 0, "decision": lbw_logic.decision})
+    global latched_shot_label, latched_shot_conf, shot_display_countdown
+    return jsonify({
+        "score": 0, 
+        "decision": lbw_logic.decision,
+        "contact": lbw_logic.first_contact,
+        "shot_label": latched_shot_label if shot_display_countdown > 0 else None,
+        "shot_conf": latched_shot_conf if shot_display_countdown > 0 else None
+    })
 
 @app.route('/get_log')
 def get_log():
@@ -219,7 +232,7 @@ def generate_frames():
                         if shot_classes[idx] not in IGNORE_LABELS and preds[0][idx] >= CONF_THRESHOLD:
                             latched_shot_label = shot_classes[idx]
                             latched_shot_conf = float(preds[0][idx])
-                            shot_display_countdown = 90
+                            shot_display_countdown = 600
                             
                             session_log.append({
                                 "time": time.strftime("%I:%M:%S %p"),
@@ -249,9 +262,9 @@ def generate_frames():
             is_delay_active = False
             if lbw_logic.first_contact == "PAD" and pad_hit_time is not None:
                 elapsed = time.time() - pad_hit_time
-                if elapsed < 3.0:
+                if elapsed < 5.0:
                     is_delay_active = True
-                    delay_remaining = 3.0 - elapsed
+                    delay_remaining = 5.0 - elapsed
                     decision = f"PENDING ({int(delay_remaining) + 1}s)"
                 else:
                     if decision == "PENDING" or decision == "CHECK LBW":
@@ -276,7 +289,6 @@ def generate_frames():
                 
             if shot_display_countdown > 0:
                 shot_display_countdown -= 1
-                cv2.putText(frame, f"SHOT: {latched_shot_label} ({latched_shot_conf*100:.1f}%)", (30, 140), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 255, 100), 2)
 
             vis_impact_point = None if is_delay_active else lbw_logic.impact_point
             vis_first_contact = None if is_delay_active else lbw_logic.first_contact

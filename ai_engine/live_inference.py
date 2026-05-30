@@ -34,7 +34,7 @@ LABEL_MAP_PATH  = os.path.join(MODELS_DIR, "label_map_v2.json")
 SEQ_LEN = 30
 CONF_THRESHOLD = 0.70
 IGNORE_LABELS  = {"Batsman"}
-SHOT_DISPLAY_FRAMES = 90
+SHOT_DISPLAY_FRAMES = 600
 MAX_MISSING_FRAMES = 10
 
 # Global State (Models Loaded on Startup)
@@ -144,7 +144,12 @@ def reset_score():
 
 @app.route('/get_score')
 def get_score():
-    return jsonify({"score": game_score})
+    global latched_shot_label, latched_shot_conf, shot_display_countdown
+    return jsonify({
+        "score": game_score,
+        "shot_label": latched_shot_label if shot_display_countdown > 0 else None,
+        "shot_conf": latched_shot_conf if shot_display_countdown > 0 else None
+    })
 
 @app.route('/get_log')
 def get_log():
@@ -344,13 +349,10 @@ def generate_frames():
             spin = spin_intensity(ball_track)
             ball_type = get_ball_type(ball_track, speed)
 
-            cv2.rectangle(annotated_frame, (20, 20), (450, 160), (0, 0, 0), -1)
+            cv2.rectangle(annotated_frame, (20, 20), (450, 130), (0, 0, 0), -1)
             cv2.putText(annotated_frame, f"TYPE: {ball_type}", (30, 50), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 255), 2)
             cv2.putText(annotated_frame, f"SPEED: {speed} km/h", (30, 80), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 2)
             cv2.putText(annotated_frame, f"SWING: {swing}px | SPIN: {spin}", (30, 110), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 0), 2)
-            
-            if ball_hit_bat and latched_shot_label:
-                cv2.putText(annotated_frame, f"SHOT: {latched_shot_label} ({latched_shot_conf*100:.1f}%)", (30, 140), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 100), 2)
             
             frame = annotated_frame
 

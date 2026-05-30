@@ -1,15 +1,14 @@
 import { Camera, Video, Image as ImageIcon, Smartphone, MonitorPlay, UploadCloud, Loader2, Zap } from 'lucide-react';
 import { useState, useRef, useEffect } from 'react';
-import { useNavigate } from 'react-router-dom';
+import { useNavigate, useLocation } from 'react-router-dom';
 import { analyzeImage, uploadVideoOnly, type DetectionResult } from '../services/api';
-
-
 
 export default function DetectionSource() {
     const navigate = useNavigate();
-    const [selectedMethod, setSelectedMethod] = useState<string>('live');
+    const location = useLocation();
+    const [selectedMethod, setSelectedMethod] = useState<string>(location.state?.method || 'live');
     const [selectedCameraType, setSelectedCameraType] = useState<string>('mobile');
-    const [analysisType, setAnalysisType] = useState<'shot' | 'lbw'>('shot');
+    const [analysisType, setAnalysisType] = useState<'shot' | 'lbw' | 'unified'>('unified');
 
     const [isAnalyzing, setIsAnalyzing] = useState(false);
     const [analysisResult, setAnalysisResult] = useState<any[] | null>(null);
@@ -357,26 +356,36 @@ export default function DetectionSource() {
             </div>
 
             {/* Analysis Type Toggle */}
-            <div className="flex justify-center mb-8">
-                <div className="bg-gray-100 p-1.5 rounded-2xl flex gap-2 w-full max-w-md shadow-inner">
-                    <button
-                        onClick={() => handleAnalysisTypeChange('shot')}
-                        className={`flex-1 py-3 px-6 rounded-xl font-bold transition-all ${
-                            analysisType === 'shot' ? 'bg-white text-emerald-600 shadow-md' : 'text-gray-500 hover:text-gray-700'
-                        }`}
-                    >
-                        Shot Detection
-                    </button>
-                    <button
-                        onClick={() => handleAnalysisTypeChange('lbw')}
-                        className={`flex-1 py-3 px-6 rounded-xl font-bold transition-all ${
-                            analysisType === 'lbw' ? 'bg-white text-emerald-600 shadow-md' : 'text-gray-500 hover:text-gray-700'
-                        }`}
-                    >
-                        LBW Analysis
-                    </button>
+            {selectedMethod !== 'image' && (
+                <div className="flex justify-center mb-8">
+                    <div className="bg-gray-100 p-1.5 rounded-2xl flex gap-2 w-full max-w-2xl shadow-inner">
+                        <button
+                            onClick={() => handleAnalysisTypeChange('shot')}
+                            className={`flex-1 py-3 px-4 rounded-xl font-bold transition-all text-sm lg:text-base ${
+                                analysisType === 'shot' ? 'bg-white text-emerald-600 shadow-md' : 'text-gray-500 hover:text-gray-700'
+                            }`}
+                        >
+                            Shot Detection
+                        </button>
+                        <button
+                            onClick={() => handleAnalysisTypeChange('lbw')}
+                            className={`flex-1 py-3 px-4 rounded-xl font-bold transition-all text-sm lg:text-base ${
+                                analysisType === 'lbw' ? 'bg-white text-emerald-600 shadow-md' : 'text-gray-500 hover:text-gray-700'
+                            }`}
+                        >
+                            LBW Analysis
+                        </button>
+                        <button
+                            onClick={() => handleAnalysisTypeChange('unified')}
+                            className={`flex-1 py-3 px-4 rounded-xl font-bold transition-all text-sm lg:text-base ${
+                                analysisType === 'unified' ? 'bg-white text-emerald-600 shadow-md' : 'text-gray-500 hover:text-gray-700'
+                            }`}
+                        >
+                            Unified Mode
+                        </button>
+                    </div>
                 </div>
-            </div>
+            )}
 
             {/* Method Selection */}
             <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4 lg:gap-6">
@@ -514,12 +523,13 @@ export default function DetectionSource() {
                                         ipAddress,
                                         port: useCustomUrl ? '' : port,
                                         showLandmarks,
-                                        analysisType
+                                        analysisType,
+                                        initialSetup: (analysisType === 'lbw' || analysisType === 'unified') ? 'manual' : 'running'
                                     }
                                 })}
                                 className="bg-emerald-500 hover:bg-emerald-600 text-white px-10 py-4 rounded-xl font-bold transition-all shadow-lg shadow-emerald-200 flex items-center gap-3 active:scale-95">
                                 <Camera className="w-5 h-5" />
-                                <span>Start Live {analysisType === 'lbw' ? 'LBW' : 'Shot'} Detection</span>
+                                <span>Start {analysisType === 'unified' ? 'Unified' : analysisType === 'lbw' ? 'LBW' : 'Shot'} Detection</span>
                             </button>
                         </div>
                     </div>

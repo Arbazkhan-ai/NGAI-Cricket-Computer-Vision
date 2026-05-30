@@ -7,8 +7,9 @@ export default function Home() {
     const { rules, gameActive, score, setScore } = useGame();
     
     const [isStreaming, setIsStreaming] = useState(false);
-    const [setupPhase, setSetupPhase] = useState<'pending' | 'modal' | 'manual' | 'running'>('pending');
+    const [setupPhase, setSetupPhase] = useState<'pending' | 'manual' | 'running'>('pending');
     const [manualPitchPts, setManualPitchPts] = useState<{x: number, y: number}[]>([]);
+    const [analysisType, setAnalysisType] = useState<'shot' | 'lbw' | 'both'>('both');
     
     const [lastDetection, setLastDetection] = useState<any>(null);
     const [recentDetections, setRecentDetections] = useState<any[]>([]);
@@ -69,7 +70,8 @@ export default function Home() {
         const scaleX = canvas.width / rect.width;
         const scaleY = canvas.height / rect.height;
         
-        const x = (e.clientX - rect.left) * scaleX;
+        const x_screen = (e.clientX - rect.left) * scaleX;
+        const x = canvas.width - x_screen;
         const y = (e.clientY - rect.top) * scaleY;
         
         setManualPitchPts(prev => {
@@ -132,6 +134,7 @@ export default function Home() {
                 const logData = await logRes.json();
                 const logs = logData.log || [];
                 
+                
                 if (logs.length > lastLogCountRef.current) {
                     const newLogs = logs.slice(lastLogCountRef.current);
                     lastLogCountRef.current = logs.length;
@@ -146,13 +149,15 @@ export default function Home() {
                         }));
                         return [...formatted, ...prev].slice(0, 50);
                     });
-                    
-                    const latest = newLogs[newLogs.length - 1];
-                    setLastDetection({
-                        class_name: latest.type === 'shot' ? latest.label : `LBW: ${latest.decision}`,
-                        conf: latest.conf || 1
-                    });
                 }
+                
+                // Directly set lastDetection to the latest score response
+                setLastDetection({
+                    decision: data.decision,
+                    contact: data.contact,
+                    shot_label: data.shot_label,
+                    shot_conf: data.shot_conf
+                });
             } catch (err) {}
         }, 1000);
         return () => clearInterval(intervalId);
@@ -171,7 +176,7 @@ export default function Home() {
                         {isStreaming && (
                             <img 
                                 src={`http://127.0.0.1:8081/video_feed?t=${streamKey}`} 
-                                className="w-full h-full object-cover" 
+                                className="w-full h-full object-cover scale-x-[-1]" 
                                 alt="Live Feed" 
                             />
                         )}
@@ -180,58 +185,44 @@ export default function Home() {
                             width={640}
                             height={480}
                             onClick={handleOverlayClick}
-                            className={`absolute inset-0 w-full h-full object-cover z-20 ${setupPhase === 'manual' ? 'cursor-crosshair' : 'pointer-events-none'}`}
+                            className={`absolute inset-0 w-full h-full object-cover z-20 scale-x-[-1] ${setupPhase === 'manual' ? 'cursor-crosshair' : 'pointer-events-none'}`}
                         />
                     </div>
 
                     {!isStreaming && setupPhase === 'pending' && (
-                        <div className="absolute inset-0 flex items-center justify-center z-10">
+                        <div className="absolute inset-0 flex flex-col items-center justify-center z-10 bg-black/60 backdrop-blur-sm gap-8">
+                            <div className="flex bg-white/10 p-1.5 rounded-2xl gap-2 shadow-inner backdrop-blur-md border border-white/20">
+                                <button
+                                    onClick={() => setAnalysisType('shot')}
+                                    className={`py-3 px-6 rounded-xl font-bold transition-all text-sm ${analysisType === 'shot' ? 'bg-white text-emerald-600 shadow-md' : 'text-white/70 hover:text-white hover:bg-white/10'}`}
+                                >
+                                    Shot Detection
+                                </button>
+                                <button
+                                    onClick={() => setAnalysisType('lbw')}
+                                    className={`py-3 px-6 rounded-xl font-bold transition-all text-sm ${analysisType === 'lbw' ? 'bg-white text-emerald-600 shadow-md' : 'text-white/70 hover:text-white hover:bg-white/10'}`}
+                                >
+                                    LBW Detection
+                                </button>
+                                <button
+                                    onClick={() => setAnalysisType('both')}
+                                    className={`py-3 px-6 rounded-xl font-bold transition-all text-sm ${analysisType === 'both' ? 'bg-white text-emerald-600 shadow-md' : 'text-white/70 hover:text-white hover:bg-white/10'}`}
+                                >
+                                    Both Models
+                                </button>
+                            </div>
+
                             <button
-                                onClick={() => setSetupPhase('modal')}
-                                className="w-20 h-20 bg-white/10 backdrop-blur-md rounded-full flex items-center justify-center border border-white/20 cursor-pointer group-hover:scale-110 transition-transform hover:bg-white/20"
+                                onClick={handleAutoPitch}
+                                className="w-20 h-20 bg-emerald-500 rounded-full flex items-center justify-center shadow-[0_0_30px_rgba(16,185,129,0.5)] cursor-pointer hover:scale-110 transition-transform hover:bg-emerald-400"
                             >
                                 <Play className="w-8 h-8 text-white fill-current ml-1" />
                             </button>
+                            <span className="text-white/80 font-bold tracking-widest uppercase text-sm">Start Detection</span>
                         </div>
                     )}
 
-                    {!isStreaming && setupPhase === 'modal' && (
-                        <div className="absolute inset-0 bg-black/80 backdrop-blur-sm z-30 flex flex-col items-center justify-center p-8 text-center animate-in fade-in zoom-in duration-300">
-                            <h3 className="text-3xl font-black text-white mb-2">Pitch Setup</h3>
-                            <p className="text-gray-400 mb-8 max-w-md">The unified engine tracks both Shots and LBW simultaneously. How should we track the pitch?</p>
-                            
-                            <div className="grid grid-cols-1 gap-4 w-full max-w-md">
-                                <button 
-                                    onClick={handleAutoPitch}
-                                    className="bg-emerald-600 hover:bg-emerald-700 text-white p-4 rounded-2xl font-bold flex items-center gap-4 transition-transform hover:scale-105"
-                                >
-                                    <div className="bg-white/20 p-3 rounded-xl"><Crosshair className="w-6 h-6" /></div>
-                                    <div className="text-left">
-                                        <div className="text-lg">Auto Pitch</div>
-                                        <div className="text-xs text-emerald-200 font-normal">AI automatically finds the pitch</div>
-                                    </div>
-                                </button>
-                                
-                                <button 
-                                    onClick={handleManualMode}
-                                    className="bg-purple-600 hover:bg-purple-700 text-white p-4 rounded-2xl font-bold flex items-center gap-4 transition-transform hover:scale-105"
-                                >
-                                    <div className="bg-white/20 p-3 rounded-xl"><Target className="w-6 h-6" /></div>
-                                    <div className="text-left">
-                                        <div className="text-lg">Manual Pitch</div>
-                                        <div className="text-xs text-purple-200 font-normal">Click 4 points to draw the pitch</div>
-                                    </div>
-                                </button>
-                            </div>
-                            
-                            <button 
-                                onClick={() => setSetupPhase('pending')}
-                                className="mt-8 text-gray-500 hover:text-white font-bold px-6 py-2 rounded-xl transition-colors"
-                            >
-                                Cancel
-                            </button>
-                        </div>
-                    )}
+
 
                     {setupPhase === 'manual' && (
                         <div className="absolute top-4 left-1/2 -translate-x-1/2 bg-black/80 backdrop-blur-md text-white px-6 py-3 rounded-2xl border border-purple-500/50 shadow-2xl z-30 flex items-center gap-4 animate-in slide-in-from-top-4">
@@ -253,26 +244,22 @@ export default function Home() {
                     )}
 
                     {isStreaming && setupPhase === 'running' && (
-                        <div className="absolute top-4 right-4 z-30">
+                        <div className="absolute top-4 right-4 z-30 flex gap-2">
+                            <button onClick={handleManualMode} className="bg-emerald-600 hover:bg-emerald-500 text-white px-4 py-2 rounded-xl text-sm font-bold shadow-lg flex items-center gap-2 transition-transform hover:scale-105">
+                                <Crosshair className="w-4 h-4" /> Manual Pitch
+                            </button>
+                            {manualPitchPts.length > 0 && (
+                                <button onClick={handleAutoPitch} className="bg-purple-600 hover:bg-purple-500 text-white px-4 py-2 rounded-xl text-sm font-bold shadow-lg flex items-center gap-2 transition-transform hover:scale-105">
+                                    <Activity className="w-4 h-4" /> Auto Pitch
+                                </button>
+                            )}
                             <button onClick={handleStop} className="bg-red-600 hover:bg-red-500 text-white px-4 py-2 rounded-xl text-sm font-bold shadow-lg flex items-center gap-2 transition-transform hover:scale-105">
                                 <StopCircle className="w-4 h-4" /> Stop
                             </button>
                         </div>
                     )}
 
-                    {isStreaming && setupPhase === 'running' && (
-                        <div className="absolute top-4 left-4 lg:top-6 lg:left-6 flex flex-col gap-2">
-                            <div className="bg-black/60 backdrop-blur-md text-white px-3 py-2 lg:px-5 lg:py-3 rounded-xl lg:rounded-2xl border border-white/10 shadow-lg">
-                                <div className="flex items-center gap-2 mb-1">
-                                    <Target className="w-3 h-3 text-emerald-400" />
-                                    <span className="text-[8px] lg:text-[10px] text-emerald-400 font-bold uppercase tracking-wider">Live Detection</span>
-                                </div>
-                                <div className="font-bold text-sm lg:text-lg leading-none">
-                                    {lastDetection?.class_name || 'Waiting...'}
-                                </div>
-                            </div>
-                        </div>
-                    )}
+                    {/* Removed On-Screen Floating Label */}
 
                     {isStreaming && setupPhase === 'running' && (
                         <div className="absolute bottom-4 right-4 lg:bottom-6 lg:right-6">
@@ -313,23 +300,60 @@ export default function Home() {
                     </div>
 
                     <div className="space-y-4">
-                        {[
-                            { label: 'Event Type', value: lastDetection?.class_name || 'Waiting...', icon: Target },
-                            { label: 'Confidence', value: lastDetection ? `${(lastDetection.conf * 100).toFixed(0)}%` : '-', icon: Activity },
-                            { label: 'Tracking Mode', value: gameActive ? 'Active Session' : 'Free Play', icon: Shield },
-                        ].map((item: any, i) => (
-                            <div key={i} className="flex items-center justify-between p-3 bg-gray-50 rounded-2xl hover:bg-emerald-50/50 transition-colors group">
+                        {(analysisType === 'lbw' || analysisType === 'both') && (
+                            <>
+                                <div className="flex items-center justify-between p-3 bg-gray-50 rounded-2xl hover:bg-emerald-50/50 transition-colors group">
+                                    <div className="flex items-center gap-4">
+                                        <div className="bg-white p-2 rounded-xl shadow-sm text-gray-400 group-hover:text-emerald-600 transition-colors">
+                                            <Target className="w-5 h-5" />
+                                        </div>
+                                        <div>
+                                            <div className="text-[10px] uppercase font-bold text-gray-400 tracking-wider">Impact Point</div>
+                                            <div className="font-bold text-gray-800">{lastDetection?.contact || '-'}</div>
+                                        </div>
+                                    </div>
+                                </div>
+                                <div className="flex items-center justify-between p-3 bg-gray-50 rounded-2xl hover:bg-emerald-50/50 transition-colors group">
+                                    <div className="flex items-center gap-4">
+                                        <div className="bg-white p-2 rounded-xl shadow-sm text-gray-400 group-hover:text-emerald-600 transition-colors">
+                                            <Activity className="w-5 h-5" />
+                                        </div>
+                                        <div>
+                                            <div className="text-[10px] uppercase font-bold text-gray-400 tracking-wider">LBW Decision</div>
+                                            <div className={`font-bold ${lastDetection?.decision === 'OUT' ? 'text-red-500' : 'text-emerald-600'}`}>
+                                                {lastDetection?.decision || '-'}
+                                            </div>
+                                        </div>
+                                    </div>
+                                </div>
+                            </>
+                        )}
+                        {(analysisType === 'shot' || analysisType === 'both') && (
+                            <div className="flex items-center justify-between p-3 bg-gray-50 rounded-2xl hover:bg-emerald-50/50 transition-colors group">
                                 <div className="flex items-center gap-4">
                                     <div className="bg-white p-2 rounded-xl shadow-sm text-gray-400 group-hover:text-emerald-600 transition-colors">
-                                        <item.icon className="w-5 h-5" />
+                                        <Crosshair className="w-5 h-5" />
                                     </div>
                                     <div>
-                                        <div className="text-[10px] uppercase font-bold text-gray-400 tracking-wider">{item.label}</div>
-                                        <div className={`font-bold text-gray-800 ${item.color || ''}`}>{item.value}</div>
+                                        <div className="text-[10px] uppercase font-bold text-gray-400 tracking-wider">Detected Shot</div>
+                                        <div className="font-bold text-gray-800">
+                                            {lastDetection?.shot_label ? `${lastDetection.shot_label} (${Math.round((lastDetection?.shot_conf || 0)*100)}%)` : '-'}
+                                        </div>
                                     </div>
                                 </div>
                             </div>
-                        ))}
+                        )}
+                        <div className="flex items-center justify-between p-3 bg-gray-50 rounded-2xl hover:bg-emerald-50/50 transition-colors group">
+                            <div className="flex items-center gap-4">
+                                <div className="bg-white p-2 rounded-xl shadow-sm text-gray-400 group-hover:text-emerald-600 transition-colors">
+                                    <Shield className="w-5 h-5" />
+                                </div>
+                                <div>
+                                    <div className="text-[10px] uppercase font-bold text-gray-400 tracking-wider">Tracking Mode</div>
+                                    <div className="font-bold text-gray-800">{gameActive ? 'Active Session' : 'Free Play'}</div>
+                                </div>
+                            </div>
+                        </div>
                     </div>
                 </div>
 
