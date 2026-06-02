@@ -133,7 +133,7 @@ export default function Signup() {
 
             {/* Sign In Link */}
             <p className="text-center text-xs text-gray-500 mt-4">
-                Already have an account? <Link to="/" className="font-bold text-emerald-700 hover:text-emerald-800 hover:underline">Sign in</Link>
+                Already have an account? <Link to="/login" className="font-bold text-emerald-700 hover:text-emerald-800 hover:underline">Sign in</Link>
             </p>
         </AuthLayout>
     );
