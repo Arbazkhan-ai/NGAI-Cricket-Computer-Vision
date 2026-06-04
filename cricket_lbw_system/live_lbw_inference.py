@@ -16,6 +16,26 @@ from utils import resize_frame
 import onnxruntime as ort
 import joblib
 import json
+import requests
+import threading
+
+def create_new_detection_sync(image_path="Live LBW Stream"):
+    try:
+        r = requests.post("http://127.0.0.1:3000/api/detections/new", json={"image_path": image_path}, timeout=0.3)
+        if r.status_code == 200:
+            return r.json().get("id")
+    except Exception as e:
+        print(f"Error creating DB record: {e}")
+    return None
+
+def make_api_call_async(url, payload):
+    def run():
+        try:
+            requests.post(url, json=payload, timeout=0.5)
+        except Exception as e:
+            pass
+    threading.Thread(target=run, daemon=True).start()
+
 
 # Initialize Flask App
 app = Flask(__name__)
@@ -67,10 +87,12 @@ pose_buffer = []
 latched_shot_label = "Waiting..."
 latched_shot_conf = 0.0
 shot_display_countdown = 0
+current_db_id = None
+frames_without_ball = 0
 
 @app.route('/api/connect', methods=['POST'])
 def connect_camera():
-    global camera, connection_status, current_ip, pitch_roi, stump_rect, pad_hit_time, manual_pitch_pts, session_log, last_logged_pad_hit_time, pose_buffer, latched_shot_label, latched_shot_conf, shot_display_countdown
+    global camera, connection_status, current_ip, pitch_roi, stump_rect, pad_hit_time, manual_pitch_pts, session_log, last_logged_pad_hit_time, pose_buffer, latched_shot_label, latched_shot_conf, shot_display_countdown, current_db_id, frames_without_ball
     data = request.json
     ip = data.get('ip', '')
     manual_pitch_pts = data.get('manual_pitch', [])
@@ -85,6 +107,8 @@ def connect_camera():
     latched_shot_label = "Waiting..."
     latched_shot_conf = 0.0
     shot_display_countdown = 0
+    current_db_id = None
+    frames_without_ball = 0
     tracker.clear()
     lbw_logic.reset()
     
@@ -122,10 +146,12 @@ def get_status():
 def reset_score():
     tracker.clear()
     lbw_logic.reset()
-    global pad_hit_time, session_log, last_logged_pad_hit_time
+    global pad_hit_time, session_log, last_logged_pad_hit_time, current_db_id, frames_without_ball
     pad_hit_time = None
     session_log = []
     last_logged_pad_hit_time = None
+    current_db_id = None
+    frames_without_ball = 0
     return jsonify({"status": "success", "score": 0})
 
 @app.route('/get_score')
@@ -148,10 +174,16 @@ def video_feed():
     return Response(generate_frames(), mimetype='multipart/x-mixed-replace; boundary=frame')
 
 def generate_frames():
-    global camera, connection_status, pitch_roi, stump_rect, pad_hit_time, current_ip, session_log, last_logged_pad_hit_time, pose_buffer, latched_shot_label, latched_shot_conf, shot_display_countdown, shot_model, scaler, shot_classes
+    global camera, connection_status, pitch_roi, stump_rect, pad_hit_time, current_ip, session_log, last_logged_pad_hit_time, pose_buffer, latched_shot_label, latched_shot_conf, shot_display_countdown, shot_model, scaler, shot_classes, current_db_id, frames_without_ball
     prev_time = time.time()
+    tracked_trajectory = []
+    last_shot_label = None
+    last_decision = None
+    last_contact = None
+    current_frame_idx = 0
 
     while True:
+        current_frame_idx += 1
         if camera is None or not camera.isOpened():
             frame = np.zeros((480, 640, 3), dtype=np.uint8)
             cv2.putText(frame, connection_status, (50, 240), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (255, 255, 255), 2)
@@ -195,7 +227,7 @@ def generate_frames():
             bat_zone = None
             if bat_data:
                 btx1, bty1, btx2, bty2 = bat_data['bbox']
-                bat_zone = (max(0, btx1 - 25), max(0, bty1 - 25), btx2 + 25, bty2 + 25)
+                bat_zone = (btx1, bty1, btx2, bty2)
                 
             pad_zone = None
             pose_results, leg_positions, pose_offset = None, [], None
@@ -204,7 +236,7 @@ def generate_frames():
                 if leg_positions:
                     lx = [p[0] for p in leg_positions]
                     ly = [p[1] for p in leg_positions]
-                    pad_zone = (min(lx) - 30, min(ly) - 30, max(lx) + 30, max(ly) + 30)
+                    pad_zone = (min(lx), min(ly), max(lx), max(ly))
                 else:
                     bx1, by1, bx2, by2 = batsman_data['bbox']
                     pad_zone = (bx1, int(by1 + (by2-by1)*0.5), bx2, by2)
@@ -243,7 +275,18 @@ def generate_frames():
                             pose_buffer = [] # Reset to avoid spam
 
             # 4. Track Ball
-            trajectory = tracker.update(ball_center)
+            if ball_center is not None:
+                frames_without_ball = 0
+                trajectory = tracker.update(ball_center)
+                if len(trajectory) == 1:
+                    current_db_id = create_new_detection_sync("Live LBW Stream")
+                    tracked_trajectory = []
+            else:
+                frames_without_ball += 1
+                trajectory = tracker.update(ball_center)
+                if frames_without_ball > 15:
+                    tracker.clear()
+                    lbw_logic.reset()
             
             # 5. Check Collision & Impact
             if lbw_logic.first_contact is None:
@@ -312,9 +355,39 @@ def generate_frames():
             )
             frame = annotated_frame
 
+            if len(trajectory) > 0:
+                tracked_trajectory = list(trajectory)
+
+            if current_db_id is not None:
+                shot_changed = (latched_shot_label != last_shot_label)
+                decision_changed = (decision != last_decision)
+                contact_changed = (lbw_logic.first_contact != last_contact)
+                if current_frame_idx % 3 == 0 or shot_changed or decision_changed or contact_changed:
+                    last_shot_label = latched_shot_label
+                    last_decision = decision
+                    last_contact = lbw_logic.first_contact
+                    results_data = [{
+                        "class_name": latched_shot_label if latched_shot_label else "Waiting...",
+                        "conf": latched_shot_conf if latched_shot_label else 0.0,
+                        "lbw_decision": decision if decision else "Waiting...",
+                        "first_contact": lbw_logic.first_contact if lbw_logic.first_contact else "None",
+                        "trajectory": tracked_trajectory,
+                        "type": "live_lbw"
+                    }]
+                    make_api_call_async("http://127.0.0.1:3000/api/detections/update", {"id": current_db_id, "results": results_data})
+
         ret, buffer = cv2.imencode('.jpg', frame)
         if not ret: continue
         yield (b'--frame\r\n' b'Content-Type: image/jpeg\r\n\r\n' + buffer.tobytes() + b'\r\n')
+
+@app.route('/api/disconnect', methods=['POST'])
+def disconnect_camera():
+    global camera, connection_status
+    if camera:
+        camera.release()
+        camera = None
+    connection_status = "Disconnected"
+    return jsonify({"status": "success", "message": "Camera disconnected"})
 
 def main():
     app.run(host='0.0.0.0', port=8081, debug=False, threaded=True)

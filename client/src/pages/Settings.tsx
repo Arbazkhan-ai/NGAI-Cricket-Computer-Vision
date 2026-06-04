@@ -1,6 +1,7 @@
 
 import { User, Bell, Shield, Sliders, Save, Camera, Moon, Globe } from 'lucide-react';
 import { useState, useEffect } from 'react';
+import { getProfile, updateProfile } from '../services/api';
 
 export default function Settings() {
     const [activeSection, setActiveSection] = useState('profile');
@@ -19,20 +20,35 @@ export default function Settings() {
             setIsDarkMode(true);
         }
 
-        // Load user data from localStorage
-        const storedUser = localStorage.getItem('user');
-        if (storedUser) {
-            try {
-                const user = JSON.parse(storedUser);
-                setProfileData(prev => ({
-                    ...prev,
-                    name: user.name || prev.name,
-                    email: user.email || prev.email,
-                }));
-            } catch (e) {
-                console.error("Failed to parse user data", e);
+        // Fetch profile from backend DB
+        getProfile().then(user => {
+            setProfileData({
+                name: user.name || '',
+                email: user.email || '',
+                phone: user.mobile_number || '',
+                location: user.location || '',
+                image: user.image || "https://images.unsplash.com/photo-1633332755192-727a05c4013d?w=400&h=400&fit=crop"
+            });
+            localStorage.setItem('user', JSON.stringify(user));
+        }).catch(err => {
+            console.warn("Failed to fetch backend profile, falling back to localStorage", err);
+            const storedUser = localStorage.getItem('user');
+            if (storedUser) {
+                try {
+                    const user = JSON.parse(storedUser);
+                    setProfileData(prev => ({
+                        ...prev,
+                        name: user.name || prev.name,
+                        email: user.email || prev.email,
+                        phone: user.mobile_number || prev.phone,
+                        location: user.location || prev.location,
+                        image: user.image || prev.image
+                    }));
+                } catch (e) {
+                    console.error("Failed to parse user data", e);
+                }
             }
-        }
+        });
     }, []);
 
     const toggleDarkMode = () => {
@@ -64,9 +80,27 @@ export default function Settings() {
         }
     };
 
-    const handleSave = () => {
-        console.log('Saving settings:', profileData);
-        alert('Settings saved successfully!');
+    const [saving, setSaving] = useState(false);
+
+    const handleSave = async () => {
+        setSaving(true);
+        try {
+            const result = await updateProfile({
+                name: profileData.name,
+                email: profileData.email,
+                mobile_number: profileData.phone,
+                location: profileData.location,
+                image: profileData.image
+            });
+            // Update localStorage
+            localStorage.setItem('user', JSON.stringify(result.user));
+            alert('Settings saved successfully!');
+        } catch (err: any) {
+            console.error(err);
+            alert(err.message || 'Failed to save settings');
+        } finally {
+            setSaving(false);
+        }
     };
 
     return (
@@ -261,10 +295,11 @@ export default function Settings() {
                         <button className="px-6 py-3 rounded-xl font-bold text-gray-500 hover:bg-gray-100 transition-colors">Cancel</button>
                         <button
                             onClick={handleSave}
-                            className="px-8 py-3 rounded-xl font-bold bg-emerald-500 text-white shadow-lg shadow-emerald-200 hover:bg-emerald-600 transition-all transform active:scale-95 flex items-center gap-2"
+                            disabled={saving}
+                            className="px-8 py-3 rounded-xl font-bold bg-emerald-500 text-white shadow-lg shadow-emerald-200 hover:bg-emerald-600 transition-all transform active:scale-95 flex items-center gap-2 disabled:opacity-50"
                         >
                             <Save className="w-4 h-4" />
-                            Save Changes
+                            {saving ? 'Saving...' : 'Save Changes'}
                         </button>
                     </div>
                 </div>

@@ -30,3 +30,7 @@ server/node_modules/
 *.log
 dist/
 build/
+
+# Database and Uploads
+*.sqlite
+server/uploads/

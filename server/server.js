@@ -444,6 +444,31 @@ app.get('/api/history', (req, res) => {
     });
 });
 
+app.post('/api/detections/new', (req, res) => {
+    const { image_path = 'Live Stream' } = req.body;
+    db.query("INSERT INTO detections (image_path, results) VALUES (?, ?)", [image_path, "[]"], (err, results) => {
+        if (err) {
+            console.error("DB Error (New Detection):", err.message);
+            return res.status(500).json({ error: err.message });
+        }
+        res.json({ id: results.insertId });
+    });
+});
+
+app.post('/api/detections/update', (req, res) => {
+    const { id, results } = req.body;
+    if (!id) return res.status(400).json({ error: 'Missing ID' });
+    
+    db.query("UPDATE detections SET results = ? WHERE id = ?", [JSON.stringify(results), id], (err) => {
+        if (err) {
+            console.error("DB Error (Update Detection):", err.message);
+            return res.status(500).json({ error: err.message });
+        }
+        res.json({ success: true });
+    });
+});
+
+
 app.get('/api/matches', (req, res) => {
     db.query("SELECT * FROM matches ORDER BY timestamp DESC", (err, rows) => {
         if (err) return res.status(500).json({ error: err.message });
@@ -553,23 +578,35 @@ app.post('/api/start_live', (req, res) => {
 
 // Stop Live Detection Process
 app.post('/api/stop_live', (req, res) => {
-    if (liveProcess) {
-        try {
-            if (process.platform === 'win32') {
-                spawn('taskkill', ['/pid', liveProcess.pid, '/f', '/t']);
-            } else {
-                liveProcess.kill();
+    const http = require('http');
+    const options = {
+        hostname: '127.0.0.1',
+        port: 8080,
+        path: '/api/disconnect',
+        method: 'POST'
+    };
+    const request = http.request(options, (response) => {
+        console.log('Stopped live process camera via API disconnect');
+        res.json({ message: 'Live detection stopped via API disconnect' });
+    });
+    request.on('error', (e) => {
+        console.warn('Could not call disconnect route, falling back to process kill', e.message);
+        if (liveProcess) {
+            try {
+                if (process.platform === 'win32') {
+                    spawn('taskkill', ['/pid', liveProcess.pid, '/f', '/t']);
+                } else {
+                    liveProcess.kill();
+                }
+                liveProcess = null;
+                console.log('Stopped live process via fallback taskkill');
+            } catch (err) {
+                console.error('Error killing process:', err);
             }
-            liveProcess = null;
-            console.log('Stopped live process via API');
-            res.json({ message: 'Live detection stopped' });
-        } catch (e) {
-            console.error('Error stopping process:', e);
-            res.status(500).json({ error: 'Failed to stop process' });
         }
-    } else {
-        res.json({ message: 'No live process running' });
-    }
+        res.json({ message: 'Live detection stopped via fallback process kill' });
+    });
+    request.end();
 });
 
 // Start LBW Live Detection Connection
@@ -613,37 +650,49 @@ app.post('/api/start_lbw_live', (req, res) => {
 
 // Stop LBW Live Detection Process
 app.post('/api/stop_lbw_live', (req, res) => {
-    if (liveLbwProcess) {
-        try {
-            if (process.platform === 'win32') {
-                spawn('taskkill', ['/pid', liveLbwProcess.pid, '/f', '/t']);
-            } else {
-                liveLbwProcess.kill();
+    const http = require('http');
+    const options = {
+        hostname: '127.0.0.1',
+        port: 8081,
+        path: '/api/disconnect',
+        method: 'POST'
+    };
+    const request = http.request(options, (response) => {
+        console.log('Stopped LBW live process camera via API disconnect');
+        res.json({ message: 'LBW Live detection stopped via API disconnect' });
+    });
+    request.on('error', (e) => {
+        console.warn('Could not call LBW disconnect route, falling back to process kill', e.message);
+        if (liveLbwProcess) {
+            try {
+                if (process.platform === 'win32') {
+                    spawn('taskkill', ['/pid', liveLbwProcess.pid, '/f', '/t']);
+                } else {
+                    liveLbwProcess.kill();
+                }
+                liveLbwProcess = null;
+                console.log('Stopped LBW live process via fallback taskkill');
+            } catch (err) {
+                console.error('Error killing LBW process:', err);
             }
-            liveLbwProcess = null;
-            console.log('Stopped LBW live process via API');
-            res.json({ message: 'LBW Live detection stopped' });
-        } catch (e) {
-            console.error('Error stopping LBW process:', e);
-            res.status(500).json({ error: 'Failed to stop LBW process' });
         }
-    } else {
-        res.json({ message: 'No LBW live process running' });
-    }
+        res.json({ message: 'LBW Live detection stopped via fallback process kill' });
+    });
+    request.end();
 });
 
 // Auth Routes
 app.post('/api/signup', async (req, res) => {
-    const { name, email, password } = req.body;
+    const { name, email, password, mobile_number } = req.body;
     if (!name || !email || !password) {
         return res.status(400).json({ error: 'All fields are required' });
     }
 
     try {
         const hashedPassword = await bcrypt.hash(password, 10);
-        db.query("INSERT INTO users (name, email, password) VALUES (?, ?, ?)", [name, email, hashedPassword], (err, results) => {
+        db.query("INSERT INTO users (name, email, password, mobile_number) VALUES (?, ?, ?, ?)", [name, email, hashedPassword, mobile_number || null], (err, results) => {
             if (err) {
-                if (err.message.includes('ER_DUP_ENTRY')) {
+                if (err.message.includes('ER_DUP_ENTRY') || err.message.includes('UNIQUE constraint failed')) {
                     return res.status(400).json({ error: 'Email already exists' });
                 }
                 return res.status(500).json({ error: err.message });
@@ -656,7 +705,7 @@ app.post('/api/signup', async (req, res) => {
 });
 
 app.post('/api/login', (req, res) => {
-    const { email, password } = req.body;
+    const { email, password, rememberMe } = req.body;
     if (!email || !password) {
         return res.status(400).json({ error: 'Email and password required' });
     }
@@ -674,13 +723,72 @@ app.post('/api/login', (req, res) => {
             const isMatch = await bcrypt.compare(password, user.password);
             if (!isMatch) return res.status(400).json({ error: 'Invalid credentials' });
 
-            const token = jwt.sign({ id: user.id, email: user.email, name: user.name }, JWT_SECRET, { expiresIn: '24h' });
-            res.json({ token, user: { id: user.id, name: user.name, email: user.email } });
+            const expiresIn = rememberMe ? '7d' : '24h';
+            const token = jwt.sign({ id: user.id, email: user.email, name: user.name }, JWT_SECRET, { expiresIn });
+            res.json({
+                token,
+                user: {
+                    id: user.id,
+                    name: user.name,
+                    email: user.email,
+                    mobile_number: user.mobile_number,
+                    location: user.location,
+                    image: user.image
+                }
+            });
         } catch (authErr) {
             console.error("Auth Processing Error:", authErr);
             res.status(500).json({ error: 'Server error during authentication' });
         }
     });
+});
+
+// Middleware to authenticate JWT token
+const authenticateToken = (req, res, next) => {
+    const authHeader = req.headers['authorization'];
+    const token = authHeader && authHeader.split(' ')[1];
+    
+    if (!token) return res.status(401).json({ error: 'Access token required' });
+    
+    jwt.verify(token, JWT_SECRET, (err, user) => {
+        if (err) return res.status(403).json({ error: 'Invalid or expired token' });
+        req.user = user;
+        next();
+    });
+};
+
+// Get User Profile Route
+app.get('/api/profile', authenticateToken, (req, res) => {
+    db.query("SELECT id, name, email, mobile_number, location, image FROM users WHERE id = ?", [req.user.id], (err, results) => {
+        if (err) return res.status(500).json({ error: 'Database error' });
+        if (!results || results.length === 0) return res.status(404).json({ error: 'User not found' });
+        res.json(results[0]);
+    });
+});
+
+// Update User Profile Route
+app.post('/api/profile/update', authenticateToken, (req, res) => {
+    const { name, email, mobile_number, location, image } = req.body;
+    if (!name || !email) {
+        return res.status(400).json({ error: 'Name and email are required' });
+    }
+
+    db.query(
+        "UPDATE users SET name = ?, email = ?, mobile_number = ?, location = ?, image = ? WHERE id = ?",
+        [name, email, mobile_number, location, image, req.user.id],
+        (err) => {
+            if (err) {
+                if (err.message.includes('ER_DUP_ENTRY') || err.message.includes('UNIQUE constraint failed')) {
+                    return res.status(400).json({ error: 'Email already in use' });
+                }
+                return res.status(500).json({ error: 'Failed to update profile: ' + err.message });
+            }
+            res.json({
+                message: 'Profile updated successfully',
+                user: { id: req.user.id, name, email, mobile_number, location, image }
+            });
+        }
+    );
 });
 
 app.post('/api/forgot-password', (req, res) => {

@@ -46,6 +46,12 @@ export default function MatchHistory() {
         }
     };
 
+    const parseUtcDate = (ts: string) => {
+        if (!ts) return new Date();
+        const clean = ts.endsWith('Z') || ts.includes('GMT') || ts.includes('UTC') ? ts : `${ts.replace(' ', 'T')}Z`;
+        return new Date(clean);
+    };
+
     useEffect(() => {
         Promise.all([getHistory(), getMatches()])
             .then(([historyData, matchesData]) => {
@@ -54,7 +60,7 @@ export default function MatchHistory() {
                 const formattedMatches = matchesData.map((m: any) => ({ ...m, type: 'match' }));
                 
                 const combined = [...formattedHistory, ...formattedMatches].sort((a, b) => 
-                    new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime()
+                    parseUtcDate(b.timestamp).getTime() - parseUtcDate(a.timestamp).getTime()
                 );
                 
                 setHistory(combined);
@@ -67,12 +73,12 @@ export default function MatchHistory() {
     }, []);
 
     const formatTime = (ts: string) => {
-        const d = new Date(ts);
+        const d = parseUtcDate(ts);
         return d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
     };
 
     const formatDate = (ts: string) => {
-        const d = new Date(ts);
+        const d = parseUtcDate(ts);
         return d.toLocaleDateString([], { month: 'short', day: 'numeric', year: 'numeric' });
     };
 

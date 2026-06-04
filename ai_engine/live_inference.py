@@ -15,6 +15,26 @@ from hawk_eye_engine import estimate_speed, swing_amount, spin_intensity, get_ba
 # Suppress warnings
 warnings.filterwarnings("ignore")
 
+import requests
+
+def create_new_detection_sync(image_path="Live Stream"):
+    try:
+        r = requests.post("http://127.0.0.1:3000/api/detections/new", json={"image_path": image_path}, timeout=0.3)
+        if r.status_code == 200:
+            return r.json().get("id")
+    except Exception as e:
+        print(f"Error creating DB record: {e}")
+    return None
+
+def make_api_call_async(url, payload):
+    def run():
+        try:
+            requests.post(url, json=payload, timeout=0.5)
+        except Exception as e:
+            pass
+    threading.Thread(target=run, daemon=True).start()
+
+
 # Initialize Flask App
 app = Flask(__name__)
 CORS(app)
@@ -75,6 +95,7 @@ pose_buffer = []
 latched_shot_label = None
 latched_shot_conf = 0.0
 shot_display_countdown = 0
+current_db_id = None
 
 
 # Global Game State
@@ -97,7 +118,7 @@ def draw_trail(frame, track):
 
 @app.route('/api/connect', methods=['POST'])
 def connect_camera():
-    global camera, connection_status, current_ip, ball_track, ball_hit_bat, pose_buffer, manual_pitch_pts, show_landmarks_flag, session_log
+    global camera, connection_status, current_ip, ball_track, ball_hit_bat, pose_buffer, manual_pitch_pts, show_landmarks_flag, session_log, current_db_id
     data = request.json
     ip = data.get('ip', '')
     manual_pitch_pts = data.get('manual_pitch', None)
@@ -109,6 +130,7 @@ def connect_camera():
     pose_buffer = []
     session_log = []
     ball_hit_bat = False
+    current_db_id = None
     
     if camera: camera.release()
     
@@ -134,12 +156,13 @@ def get_status():
 
 @app.route('/reset_score', methods=['POST'])
 def reset_score():
-    global game_score, ball_track, ball_hit_bat, pose_buffer, session_log
+    global game_score, ball_track, ball_hit_bat, pose_buffer, session_log, current_db_id
     game_score = 0
     ball_track = []
     ball_hit_bat = False
     pose_buffer = []
     session_log = []
+    current_db_id = None
     return jsonify({"status": "success", "score": 0})
 
 @app.route('/get_score')
@@ -160,7 +183,10 @@ def video_feed():
     return Response(generate_frames(), mimetype='multipart/x-mixed-replace; boundary=frame')
 
 def generate_frames():
-    global camera, ball_model, pitch_model, shot_model, scaler, classes, mp_drawing, pose, mp_pose, ball_track, frames_without_ball, ball_hit_bat, pose_buffer, latched_shot_label, latched_shot_conf, shot_display_countdown, connection_status, game_score, last_hit_frame, current_frame_idx, manual_pitch_pts, current_ip, show_landmarks_flag, session_log
+    global camera, ball_model, pitch_model, shot_model, scaler, classes, mp_drawing, pose, mp_pose, ball_track, frames_without_ball, ball_hit_bat, pose_buffer, latched_shot_label, latched_shot_conf, shot_display_countdown, connection_status, game_score, last_hit_frame, current_frame_idx, manual_pitch_pts, current_ip, show_landmarks_flag, session_log, current_db_id
+
+    tracked_trajectory = []
+    last_shot_label = None
 
     while True:
         current_frame_idx += 1
@@ -273,6 +299,9 @@ def generate_frames():
                 if near_pitch:
                     ball_track.append((cx, cy))
                     frames_without_ball = 0
+                    if len(ball_track) == 1:
+                        current_db_id = create_new_detection_sync("Live Stream")
+                        tracked_trajectory = []
                 else:
                     frames_without_ball += 1
             else:
@@ -349,6 +378,25 @@ def generate_frames():
             spin = spin_intensity(ball_track)
             ball_type = get_ball_type(ball_track, speed)
 
+            if len(ball_track) > 0:
+                tracked_trajectory = list(ball_track)
+
+            if current_db_id is not None:
+                shot_changed = (latched_shot_label != last_shot_label)
+                if current_frame_idx % 3 == 0 or shot_changed:
+                    last_shot_label = latched_shot_label
+                    results_data = [{
+                        "class_name": latched_shot_label if latched_shot_label else "Waiting...",
+                        "conf": latched_shot_conf if latched_shot_label else 0.0,
+                        "speed": speed if speed else 0,
+                        "swing": swing if swing else 0,
+                        "spin": spin if spin else "Low",
+                        "ball_type": ball_type if ball_type else "Normal",
+                        "trajectory": tracked_trajectory,
+                        "type": "live_ball"
+                    }]
+                    make_api_call_async("http://127.0.0.1:3000/api/detections/update", {"id": current_db_id, "results": results_data})
+
             cv2.rectangle(annotated_frame, (20, 20), (450, 130), (0, 0, 0), -1)
             cv2.putText(annotated_frame, f"TYPE: {ball_type}", (30, 50), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 255), 2)
             cv2.putText(annotated_frame, f"SPEED: {speed} km/h", (30, 80), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 2)
@@ -359,6 +407,15 @@ def generate_frames():
         ret, buffer = cv2.imencode('.jpg', frame)
         if not ret: continue
         yield (b'--frame\r\n' b'Content-Type: image/jpeg\r\n\r\n' + buffer.tobytes() + b'\r\n')
+
+@app.route('/api/disconnect', methods=['POST'])
+def disconnect_camera():
+    global camera, connection_status
+    if camera:
+        camera.release()
+        camera = None
+    connection_status = "Disconnected"
+    return jsonify({"status": "success", "message": "Camera disconnected"})
 
 def main():
     app.run(host='0.0.0.0', port=8080, debug=False, threaded=True)

@@ -16,9 +16,9 @@ import {
 } from 'recharts';
 
 import { useEffect, useState } from 'react';
-import { getHistory } from '../services/api';
+import { getHistory, getMatches } from '../services/api';
 
-const processData = (history: any[]) => {
+const processData = (history: any[], matches: any[]) => {
     // KPI
     const totalShots = history.length;
     let hitCount = 0;
@@ -65,7 +65,57 @@ const processData = (history: any[]) => {
     const shotDist = Object.keys(counts).map(key => ({ name: key, count: counts[key] }));
     const hitRate = totalShots > 0 ? ((hitCount / totalShots) * 100).toFixed(1) + '%' : '0%';
 
-    return { shotDist, totalShots, hitRate };
+    // Build Performance Over Time data
+    const parseUtcDate = (ts: string) => {
+        if (!ts) return new Date();
+        const clean = ts.endsWith('Z') || ts.includes('GMT') || ts.includes('UTC') ? ts : `${ts.replace(' ', 'T')}Z`;
+        return new Date(clean);
+    };
+
+    const formattedHistory = history.map((d: any) => ({ ...d, type: 'detection' }));
+    const formattedMatches = matches.map((m: any) => ({ ...m, type: 'match' }));
+
+    const combined = [...formattedHistory, ...formattedMatches].sort((a, b) => 
+        parseUtcDate(a.timestamp).getTime() - parseUtcDate(b.timestamp).getTime()
+    );
+
+    const performanceData = combined.map(item => {
+        const dateObj = parseUtcDate(item.timestamp);
+        const dateStr = dateObj.toLocaleDateString([], { month: '2-digit', day: '2-digit' });
+        
+        let score = 0;
+        let accuracy = 80; // default baseline
+
+        if (item.type === 'match') {
+            score = item.score || 0;
+            try {
+                const details = JSON.parse(item.details);
+                if (Array.isArray(details) && details.length > 0) {
+                    const shotLogs = details.filter(l => l.type === 'shot');
+                    if (shotLogs.length > 0) {
+                        const totalConf = shotLogs.reduce((sum, current) => sum + (current.conf || 0), 0);
+                        accuracy = Math.round((totalConf / shotLogs.length) * 100);
+                    }
+                }
+            } catch (e) {}
+        } else {
+            score = 1;
+            try {
+                const results = JSON.parse(item.results);
+                if (Array.isArray(results) && results.length > 0) {
+                    accuracy = Math.round((results[0].conf || 0.8) * 100);
+                }
+            } catch (e) {}
+        }
+
+        return {
+            time: dateStr,
+            accuracy,
+            score
+        };
+    });
+
+    return { shotDist, totalShots, hitRate, performanceData };
 };
 
 
@@ -84,11 +134,11 @@ const KpiCard = ({ title, value, icon: Icon }: { title: string, value: string, i
 );
 
 export default function Analytics() {
-    const [data, setData] = useState<any>({ shotDist: [], totalShots: 0, hitRate: '0%' });
+    const [data, setData] = useState<any>({ shotDist: [], totalShots: 0, hitRate: '0%', performanceData: [] });
 
     useEffect(() => {
-        getHistory().then(history => {
-            const processed = processData(history);
+        Promise.all([getHistory(), getMatches()]).then(([history, matches]) => {
+            const processed = processData(history, matches);
             setData(processed);
         }).catch(console.error);
     }, []);
@@ -182,7 +232,7 @@ export default function Analytics() {
                 <h3 className="text-lg font-bold text-emerald-900 mb-6">Performance Over Time</h3>
                 <div className="h-72">
                     <ResponsiveContainer width="100%" height="100%">
-                        <LineChart data={[]}>
+                        <LineChart data={data.performanceData}>
                             <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#F3F4F6" />
                             <XAxis
                                 dataKey="time"

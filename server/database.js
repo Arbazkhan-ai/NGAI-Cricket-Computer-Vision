@@ -40,6 +40,10 @@ db.serialize(() => {
         reset_token VARCHAR(255),
         reset_token_expiry BIGINT
     )`);
+    // Alter table to add new columns if they don't exist
+    db.run(`ALTER TABLE users ADD COLUMN mobile_number TEXT`, (err) => {});
+    db.run(`ALTER TABLE users ADD COLUMN location TEXT`, (err) => {});
+    db.run(`ALTER TABLE users ADD COLUMN image TEXT`, (err) => {});
 });
 
 // Wrapper to mimic mysql2's db.query behavior so server.js doesn't need to change much

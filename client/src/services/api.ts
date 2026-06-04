@@ -301,3 +301,44 @@ export const resetPassword = async (token: string, newPassword: string) => {
     if (!response.ok) throw new Error(result.error || 'Failed to reset password');
     return result;
 };
+
+export const getProfile = async () => {
+    const token = localStorage.getItem('token');
+    const response = await fetch(`${API_URL}/profile`, {
+        headers: {
+            'Authorization': `Bearer ${token}`
+        }
+    });
+    if (!response.ok) {
+        if (response.status === 401 || response.status === 403) {
+            localStorage.removeItem('token');
+            localStorage.removeItem('user');
+            window.location.href = '/login';
+        }
+        const result = await response.json();
+        throw new Error(result.error || 'Failed to fetch profile');
+    }
+    return response.json();
+};
+
+export const updateProfile = async (profileData: any) => {
+    const token = localStorage.getItem('token');
+    const response = await fetch(`${API_URL}/profile/update`, {
+        method: 'POST',
+        headers: {
+            'Content-Type': 'application/json',
+            'Authorization': `Bearer ${token}`
+        },
+        body: JSON.stringify(profileData),
+    });
+    if (!response.ok) {
+        if (response.status === 401 || response.status === 403) {
+            localStorage.removeItem('token');
+            localStorage.removeItem('user');
+            window.location.href = '/login';
+        }
+        const result = await response.json();
+        throw new Error(result.error || 'Failed to update profile');
+    }
+    return response.json();
+};

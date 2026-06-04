@@ -8,6 +8,7 @@ import { login } from '../services/api';
 export default function Login() {
     const navigate = useNavigate();
     const [showPassword, setShowPassword] = useState(false);
+    const [rememberMe, setRememberMe] = useState(false);
 
     // Form State
     const [email, setEmail] = useState('');
@@ -19,7 +20,7 @@ export default function Login() {
         setError('');
         setLoading(true);
         try {
-            const data = await login({ email, password });
+            const data = await login({ email, password, rememberMe });
             localStorage.setItem('token', data.token);
             localStorage.setItem('user', JSON.stringify(data.user));
             navigate('/home');
@@ -72,7 +73,12 @@ export default function Login() {
             {/* Remember & Forget */}
             <div className="flex items-center justify-between text-xs mt-2">
                 <label className="flex items-center gap-2 cursor-pointer select-none">
-                    <input type="checkbox" className="accent-emerald-600 h-4 w-4 rounded border-gray-300 focus:ring-emerald-500" />
+                    <input
+                        type="checkbox"
+                        checked={rememberMe}
+                        onChange={(e) => setRememberMe(e.target.checked)}
+                        className="accent-emerald-600 h-4 w-4 rounded border-gray-300 focus:ring-emerald-500 cursor-pointer"
+                    />
                     <span className="text-emerald-900 font-semibold">Remember Me</span>
                 </label>
                 <Link to="/forgot-password" className="font-bold text-emerald-700 hover:text-emerald-800 transition-colors">Forget Password?</Link>
