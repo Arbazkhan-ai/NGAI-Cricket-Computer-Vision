@@ -692,10 +692,11 @@ app.post('/api/signup', async (req, res) => {
         const hashedPassword = await bcrypt.hash(password, 10);
         db.query("INSERT INTO users (name, email, password, mobile_number) VALUES (?, ?, ?, ?)", [name, email, hashedPassword, mobile_number || null], (err, results) => {
             if (err) {
-                if (err.message.includes('ER_DUP_ENTRY') || err.message.includes('UNIQUE constraint failed')) {
+                console.error("Signup DB Query Error:", err);
+                if (err.message && (err.message.includes('ER_DUP_ENTRY') || err.message.includes('UNIQUE constraint failed'))) {
                     return res.status(400).json({ error: 'Email already exists' });
                 }
-                return res.status(500).json({ error: err.message });
+                return res.status(500).json({ error: err.message || 'Unknown DB Error' });
             }
             res.status(201).json({ message: 'User created successfully', userId: results.insertId });
         });

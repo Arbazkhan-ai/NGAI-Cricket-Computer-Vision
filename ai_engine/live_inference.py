@@ -46,6 +46,7 @@ MODELS_DIR = os.path.join(BASE_DIR, 'models')
 # Model Paths
 YOLO_BALL_PATH = os.path.join(MODELS_DIR, "yolo_ball_best.pt")
 YOLO_PITCH_PATH = os.path.join(MODELS_DIR, "yolo_pitch_best.pt")
+YOLO_STUMP_PATH = os.path.join(os.path.dirname(BASE_DIR), "cricket_lbw_system", "runs", "detect", "train", "weights", "best.pt")
 SHOT_MODEL_PATH = os.path.join(MODELS_DIR, "lstm_shot_v2.onnx")
 SCALER_PATH     = os.path.join(MODELS_DIR, "scaler_v2.save")
 LABEL_MAP_PATH  = os.path.join(MODELS_DIR, "label_map_v2.json")
@@ -66,6 +67,7 @@ import json
 try:
     ball_model = YOLO(YOLO_BALL_PATH)
     pitch_model = YOLO(YOLO_PITCH_PATH)
+    stump_model = YOLO(YOLO_STUMP_PATH)
     shot_model = ort.InferenceSession(SHOT_MODEL_PATH)
     scaler = joblib.load(SCALER_PATH)
     with open(LABEL_MAP_PATH, "r") as f:
@@ -141,7 +143,10 @@ def connect_camera():
         video_source = os.path.join(os.path.dirname(BASE_DIR), 'shared', ip)
 
     print(f"Connecting to: {video_source}")
-    camera = cv2.VideoCapture(video_source)
+    if video_source == 0 and os.name == 'nt':
+        camera = cv2.VideoCapture(video_source, cv2.CAP_DSHOW)
+    else:
+        camera = cv2.VideoCapture(video_source)
     if camera.isOpened():
         connection_status = "Connected"
         current_ip = ip
@@ -183,7 +188,7 @@ def video_feed():
     return Response(generate_frames(), mimetype='multipart/x-mixed-replace; boundary=frame')
 
 def generate_frames():
-    global camera, ball_model, pitch_model, shot_model, scaler, classes, mp_drawing, pose, mp_pose, ball_track, frames_without_ball, ball_hit_bat, pose_buffer, latched_shot_label, latched_shot_conf, shot_display_countdown, connection_status, game_score, last_hit_frame, current_frame_idx, manual_pitch_pts, current_ip, show_landmarks_flag, session_log, current_db_id
+    global camera, ball_model, pitch_model, stump_model, shot_model, scaler, classes, mp_drawing, pose, mp_pose, ball_track, frames_without_ball, ball_hit_bat, pose_buffer, latched_shot_label, latched_shot_conf, shot_display_countdown, connection_status, game_score, last_hit_frame, current_frame_idx, manual_pitch_pts, current_ip, show_landmarks_flag, session_log, current_db_id
 
     tracked_trajectory = []
     last_shot_label = None
@@ -229,6 +234,14 @@ def generate_frames():
                                 best_pitch = (px1, py1, px2, py2)
                 if best_pitch:
                     pitch_boxes.append(best_pitch)
+
+            stump_boxes = []
+            results_stumps = stump_model.predict(frame, conf=0.25, verbose=False)
+            for res in results_stumps:
+                for box in res.boxes:
+                    if int(box.cls[0]) == 0:
+                        sx1, sy1, sx2, sy2 = box.xyxy[0].tolist()
+                        stump_boxes.append((sx1, sy1, sx2, sy2))
 
             results_ball = ball_model(frame, verbose=False, conf=0.15)
             all_batsmen = []
@@ -368,6 +381,10 @@ def generate_frames():
                 color = (0, 255, 0) if cls_name == 'batsman' else (255, 0, 0) if cls_name == 'ball' else (0, 0, 255)
                 cv2.rectangle(annotated_frame, (int(bx1), int(by1)), (int(bx2), int(by2)), color, 2)
                 cv2.putText(annotated_frame, f"{cls_name.upper()} {conf:.2f}", (int(bx1), int(by1)-10), cv2.FONT_HERSHEY_SIMPLEX, 0.5, color, 2)
+
+            for (sx1, sy1, sx2, sy2) in stump_boxes:
+                cv2.rectangle(annotated_frame, (int(sx1), int(sy1)), (int(sx2), int(sy2)), (0, 0, 255), 2)
+                cv2.putText(annotated_frame, "STUMPS", (int(sx1), int(sy1) - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 0, 255), 2)
 
             # Trail & Physics
             annotated_frame = draw_trail(annotated_frame, ball_track)

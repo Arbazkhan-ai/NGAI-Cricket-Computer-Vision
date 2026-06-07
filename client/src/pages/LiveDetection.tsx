@@ -38,6 +38,11 @@ export default function LiveDetection() {
             setLiveScore(0);
             prevBackendScoreRef.current = 0;
             startTimeRef.current = Date.now();
+            setLbwDecision(null);
+            setFirstContact(null);
+            setShotType(null);
+            pendingContactRef.current = null;
+            pendingShotRef.current = null;
 
             setStatus('Starting Detection Service...');
             let formattedIp = ipAddress;
@@ -93,21 +98,13 @@ export default function LiveDetection() {
                 
                 if (analysisType === 'lbw' || analysisType === 'unified') {
                     setLbwDecision(data.decision);
-                    if (data.contact && data.contact !== pendingContactRef.current) {
-                        pendingContactRef.current = data.contact;
-                        setFirstContact('Analyzing...');
-                        setTimeout(() => {
-                            setFirstContact(data.contact);
-                        }, 5000);
-                    }
+                    setFirstContact(data.contact);
                 }
                 
-                if (data.shot_label && data.shot_label !== pendingShotRef.current) {
-                    pendingShotRef.current = data.shot_label;
-                    setShotType({ label: 'Analyzing...', conf: 0 });
-                    setTimeout(() => {
-                        setShotType({ label: data.shot_label, conf: data.shot_conf });
-                    }, 12000);
+                if (data.shot_label) {
+                    setShotType({ label: data.shot_label, conf: data.shot_conf });
+                } else {
+                    setShotType(null);
                 }
                 
                 if (data.score > prevBackendScoreRef.current) {

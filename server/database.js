@@ -1,72 +1,72 @@
-const sqlite3 = require('sqlite3').verbose();
-const path = require('path');
+const mysql = require('mysql2');
 
-const dbPath = path.join(__dirname, 'cricket_db.sqlite');
-const db = new sqlite3.Database(dbPath, (err) => {
-    if (err) {
-        console.error('CRITICAL: SQLite Initialization Failed!', err.message);
-    } else {
-        console.log('Connected to the SQLite database (cricket_db.sqlite).');
-    }
+const db = mysql.createPool({
+    host: 'localhost',
+    user: 'root',
+    password: '',
+    database: 'cricket_cv',
+    waitForConnections: true,
+    connectionLimit: 10,
+    queueLimit: 0
 });
 
 // Initialize tables
-db.serialize(() => {
-    db.run(`CREATE TABLE IF NOT EXISTS detections (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        image_path TEXT,
-        results TEXT,
-        timestamp DATETIME DEFAULT CURRENT_TIMESTAMP
-    )`);
-    db.run(`CREATE TABLE IF NOT EXISTS matches (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        score INTEGER,
-        shots_count INTEGER,
-        duration VARCHAR(50),
-        details TEXT,
-        video_url TEXT,
-        timestamp DATETIME DEFAULT CURRENT_TIMESTAMP
-    )`);
-    // Alter table to add video_url if it doesn't exist
-    db.run(`ALTER TABLE matches ADD COLUMN video_url TEXT`, (err) => {
-        // Ignore error if column already exists
-    });
-    db.run(`CREATE TABLE IF NOT EXISTS users (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        name VARCHAR(255),
-        email VARCHAR(255) UNIQUE,
-        password VARCHAR(255),
-        created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-        reset_token VARCHAR(255),
-        reset_token_expiry BIGINT
-    )`);
-    // Alter table to add new columns if they don't exist
-    db.run(`ALTER TABLE users ADD COLUMN mobile_number TEXT`, (err) => {});
-    db.run(`ALTER TABLE users ADD COLUMN location TEXT`, (err) => {});
-    db.run(`ALTER TABLE users ADD COLUMN image TEXT`, (err) => {});
+db.query(`CREATE TABLE IF NOT EXISTS detections (
+    id INT AUTO_INCREMENT PRIMARY KEY,
+    image_path TEXT,
+    results TEXT,
+    timestamp DATETIME DEFAULT CURRENT_TIMESTAMP
+)`, (err) => {
+    if (err) console.error('Error creating detections table:', err.message);
 });
 
-// Wrapper to mimic mysql2's db.query behavior so server.js doesn't need to change much
-module.exports = {
-    query: (sql, params, callback) => {
-        if (typeof params === 'function') {
-            callback = params;
-            params = [];
-        }
-        
-        const isSelect = sql.trim().toUpperCase().startsWith('SELECT');
-        if (isSelect) {
-            db.all(sql, params, (err, rows) => {
-                if (callback) callback(err, rows);
-            });
+db.query(`CREATE TABLE IF NOT EXISTS matches (
+    id INT AUTO_INCREMENT PRIMARY KEY,
+    score INT,
+    shots_count INT,
+    duration VARCHAR(50),
+    details TEXT,
+    video_url TEXT,
+    timestamp DATETIME DEFAULT CURRENT_TIMESTAMP
+)`, (err) => {
+    if (err) console.error('Error creating matches table:', err.message);
+});
+
+// Since CREATE TABLE IF NOT EXISTS doesn't add columns to existing tables, we try ALTER TABLE but ignore errors
+db.query(`ALTER TABLE matches ADD COLUMN video_url TEXT`, (err) => {
+    // Ignore error if column already exists
+});
+
+db.query(`CREATE TABLE IF NOT EXISTS users (
+    id INT AUTO_INCREMENT PRIMARY KEY,
+    name VARCHAR(255),
+    email VARCHAR(255) UNIQUE,
+    password VARCHAR(255),
+    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+    reset_token VARCHAR(255),
+    reset_token_expiry BIGINT
+)`, (err) => {
+    if (err) console.error('Error creating users table:', err.message);
+});
+
+// Alter table to add new columns if they don't exist
+db.query(`ALTER TABLE users ADD COLUMN mobile_number TEXT`, (err) => {});
+db.query(`ALTER TABLE users ADD COLUMN location TEXT`, (err) => {});
+db.query(`ALTER TABLE users ADD COLUMN image TEXT`, (err) => {});
+
+// Connect logic to check if pool is working
+db.getConnection((err, connection) => {
+    if (err) {
+        if (err.code === 'ER_BAD_DB_ERROR') {
+            console.error('CRITICAL: Database cricket_cv does not exist. Please create it manually.');
         } else {
-            db.run(sql, params, function(err) {
-                // 'this' contains lastID and changes for sqlite3 db.run
-                if (callback) {
-                    const resultObj = this ? { insertId: this.lastID, affectedRows: this.changes } : {};
-                    callback(err, resultObj);
-                }
-            });
+            console.error('CRITICAL: MySQL Initialization Failed!', err.message);
         }
+    } else {
+        console.log('Connected to the MySQL database (cricket_cv).');
+        connection.release();
     }
-};
+});
+
+// We can simply export the pool and it will act like the old wrapper
+module.exports = db;

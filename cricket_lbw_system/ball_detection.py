@@ -2,8 +2,14 @@ from ultralytics import YOLO
 import cv2
 import numpy as np
 
+import os
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+
 class Detector:
-    def __init__(self, ball_model_path='models/ball_model.pt', pitch_model_path='models/pitch.pt', stump_model_path='runs/detect/train/weights/best.pt'):
+    def __init__(self, 
+                 ball_model_path=os.path.join(BASE_DIR, 'models', 'ball_model.pt'), 
+                 pitch_model_path=os.path.join(BASE_DIR, 'models', 'pitch.pt'), 
+                 stump_model_path=os.path.join(BASE_DIR, 'runs', 'detect', 'train', 'weights', 'best.pt')):
         self.ball_model = YOLO(ball_model_path)
         self.pitch_model = YOLO(pitch_model_path)
         self.stump_model = YOLO(stump_model_path)
@@ -15,7 +21,7 @@ class Detector:
                 return list(map(int, box.xyxy[0]))
         return None
 
-    def detect_stumps(self, frame, conf_threshold=0.5):
+    def detect_stumps(self, frame, conf_threshold=0.25):
         results = self.stump_model(frame, verbose=False)[0]
         best_box = None
         highest_conf = 0.0
