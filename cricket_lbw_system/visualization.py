@@ -1,7 +1,7 @@
 import cv2
 import numpy as np
 
-def draw_analytics(frame, ball_data, objects, trajectory, predicted_path, impact_point, decision, fps, pitch_roi, stump_rect, manual_pitch, bat_zone=None, pad_zone=None, first_contact=None, show_setup=True):
+def draw_analytics(frame, ball_data, objects, trajectory, predicted_path, impact_point, decision, fps, pitch_roi, stump_rect, manual_pitch, bat_zone=None, pad_zone=None, first_contact=None, show_setup=True, show_detections=False):
     overlay = frame.copy()
     
     # 1. Draw Setup Elements (Only if show_setup is True)
@@ -55,14 +55,15 @@ def draw_analytics(frame, ball_data, objects, trajectory, predicted_path, impact
     cv2.addWeighted(overlay, 0.3, frame, 0.7, 0, frame)
 
     # 4. Draw Detections
-    if ball_data:
-        x1, y1, x2, y2 = ball_data['bbox']
-        cv2.rectangle(frame, (x1, y1), (x2, y2), (255, 255, 255), 1)
-        cv2.circle(frame, ball_data['center'], 5, (0, 255, 255), -1)
-        
-    if objects.get('batsman'):
-        bx1, by1, bx2, by2 = objects['batsman']['bbox']
-        cv2.rectangle(frame, (bx1, by1), (bx2, by2), (255, 0, 255), 1)
+    if show_detections:
+        if ball_data:
+            x1, y1, x2, y2 = ball_data['bbox']
+            cv2.rectangle(frame, (x1, y1), (x2, y2), (255, 255, 255), 1)
+            cv2.circle(frame, ball_data['center'], 5, (0, 255, 255), -1)
+            
+        if objects.get('batsman'):
+            bx1, by1, bx2, by2 = objects['batsman']['bbox']
+            cv2.rectangle(frame, (bx1, by1), (bx2, by2), (255, 0, 255), 1)
 
     # 5. Draw Trajectory
     for i in range(1, len(trajectory)):

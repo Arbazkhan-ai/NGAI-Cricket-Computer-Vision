@@ -376,15 +376,16 @@ def generate_frames():
                     cv2.putText(annotated_frame, "AUTO PITCH", (int(px1), int(py1) - 5), cv2.FONT_HERSHEY_SIMPLEX, 0.4, (255, 255, 255), 1)
             
             # Draw Balls, Batsmen, Bats
-            for item in all_batsmen + all_bats + ([current_ball_box] if current_ball_box else []):
-                bx1, by1, bx2, by2, cls_name, conf = item
-                color = (0, 255, 0) if cls_name == 'batsman' else (255, 0, 0) if cls_name == 'ball' else (0, 0, 255)
-                cv2.rectangle(annotated_frame, (int(bx1), int(by1)), (int(bx2), int(by2)), color, 2)
-                cv2.putText(annotated_frame, f"{cls_name.upper()} {conf:.2f}", (int(bx1), int(by1)-10), cv2.FONT_HERSHEY_SIMPLEX, 0.5, color, 2)
+            if show_landmarks_flag:
+                for item in all_batsmen + all_bats + ([current_ball_box] if current_ball_box else []):
+                    bx1, by1, bx2, by2, cls_name, conf = item
+                    color = (0, 255, 0) if cls_name == 'batsman' else (255, 0, 0) if cls_name == 'ball' else (0, 0, 255)
+                    cv2.rectangle(annotated_frame, (int(bx1), int(by1)), (int(bx2), int(by2)), color, 2)
+                    cv2.putText(annotated_frame, f"{cls_name.upper()} {conf:.2f}", (int(bx1), int(by1)-10), cv2.FONT_HERSHEY_SIMPLEX, 0.5, color, 2)
 
-            for (sx1, sy1, sx2, sy2) in stump_boxes:
-                cv2.rectangle(annotated_frame, (int(sx1), int(sy1)), (int(sx2), int(sy2)), (0, 0, 255), 2)
-                cv2.putText(annotated_frame, "STUMPS", (int(sx1), int(sy1) - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 0, 255), 2)
+                for (sx1, sy1, sx2, sy2) in stump_boxes:
+                    cv2.rectangle(annotated_frame, (int(sx1), int(sy1)), (int(sx2), int(sy2)), (0, 0, 255), 2)
+                    cv2.putText(annotated_frame, "STUMPS", (int(sx1), int(sy1) - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 0, 255), 2)
 
             # Trail & Physics
             annotated_frame = draw_trail(annotated_frame, ball_track)

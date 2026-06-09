@@ -512,7 +512,7 @@ export default function DetectionSource() {
                                     onClick={() => setShowLandmarks(!showLandmarks)}>
                                     <div className={`bg-white w-4 h-4 rounded-full shadow-md transform transition-transform ${showLandmarks ? 'translate-x-6' : ''}`} />
                                 </div>
-                                <span className="font-semibold text-gray-700 group-hover:text-emerald-600 transition-colors">Show Landmarks</span>
+                                <span className="font-semibold text-gray-700 group-hover:text-emerald-600 transition-colors">Show Detections & Landmarks</span>
                             </label>
                         </div>
 
@@ -602,7 +602,7 @@ export default function DetectionSource() {
                                                 onClick={(e) => { e.stopPropagation(); setShowLandmarks(!showLandmarks); }}>
                                                 <div className={`bg-white w-4 h-4 rounded-full shadow-md transform transition-transform ${showLandmarks ? 'translate-x-6' : ''}`} />
                                             </div>
-                                            <span className="font-semibold text-gray-700 group-hover:text-emerald-600 transition-colors">Show Pose Landmarks</span>
+                                            <span className="font-semibold text-gray-700 group-hover:text-emerald-600 transition-colors">Show Detections & Landmarks</span>
                                         </label>
                                     </div>
 

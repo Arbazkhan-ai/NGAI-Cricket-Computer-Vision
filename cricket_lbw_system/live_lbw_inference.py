@@ -75,6 +75,7 @@ IGNORE_LABELS  = {"Batsman"}
 camera = None
 connection_status = "Not Connected"
 current_ip = ""
+show_landmarks_flag = False
 
 # LBW Tracking State
 pitch_roi = None
@@ -95,10 +96,11 @@ shot_delay_countdown = 0
 
 @app.route('/api/connect', methods=['POST'])
 def connect_camera():
-    global camera, connection_status, current_ip, pitch_roi, stump_rect, pad_hit_time, manual_pitch_pts, session_log, last_logged_pad_hit_time, pose_buffer, latched_shot_label, latched_shot_conf, shot_display_countdown, shot_delay_countdown, current_db_id, frames_without_ball, lbw_decision_time, current_display_decision
+    global camera, connection_status, current_ip, pitch_roi, stump_rect, pad_hit_time, manual_pitch_pts, session_log, last_logged_pad_hit_time, pose_buffer, latched_shot_label, latched_shot_conf, shot_display_countdown, shot_delay_countdown, current_db_id, frames_without_ball, lbw_decision_time, current_display_decision, show_landmarks_flag
     data = request.json
     ip = data.get('ip', '')
     manual_pitch_pts = data.get('manual_pitch', [])
+    show_landmarks_flag = data.get('showLandmarks', False)
     
     # Reset tracking state
     pitch_roi = None
@@ -197,7 +199,7 @@ def video_feed():
     return Response(generate_frames(), mimetype='multipart/x-mixed-replace; boundary=frame')
 
 def generate_frames():
-    global camera, connection_status, pitch_roi, stump_rect, pad_hit_time, current_ip, session_log, last_logged_pad_hit_time, pose_buffer, latched_shot_label, latched_shot_conf, shot_display_countdown, shot_delay_countdown, shot_model, scaler, shot_classes, current_db_id, frames_without_ball, lbw_decision_time, current_display_decision
+    global camera, connection_status, pitch_roi, stump_rect, pad_hit_time, current_ip, session_log, last_logged_pad_hit_time, pose_buffer, latched_shot_label, latched_shot_conf, shot_display_countdown, shot_delay_countdown, shot_model, scaler, shot_classes, current_db_id, frames_without_ball, lbw_decision_time, current_display_decision, show_landmarks_flag
     prev_time = time.time()
     tracked_trajectory = []
     last_shot_label = None
@@ -370,7 +372,7 @@ def generate_frames():
                     })
 
             # 8. Visualization
-            if pose_results:
+            if pose_results and show_landmarks_flag:
                 pose_detector.draw_skeleton(frame, pose_results, offset=pose_offset)
                 
             if current_display_decision is None:
@@ -397,7 +399,8 @@ def generate_frames():
                 bat_zone=bat_zone,
                 pad_zone=pad_zone,
                 first_contact=vis_first_contact,
-                show_setup=False
+                show_setup=False,
+                show_detections=show_landmarks_flag
             )
 
             if decision and decision not in ["PENDING", "CHECK LBW", ""] and not is_delay_active:

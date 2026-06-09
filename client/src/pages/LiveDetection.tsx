@@ -156,6 +156,10 @@ export default function LiveDetection() {
     const handleAutoPitch = async () => {
         setSetupPhase('running');
         setManualPitchPts([]);
+        if (overlayRef.current) {
+            const ctx = overlayRef.current.getContext('2d');
+            if (ctx) ctx.clearRect(0, 0, overlayRef.current.width, overlayRef.current.height);
+        }
         await runService(undefined);
     };
 
@@ -478,7 +482,7 @@ export default function LiveDetection() {
 
                     {!error && status === 'Running' && (
                         <div className="text-gray-400 text-xs mt-4">
-                            Stream Source: {ipAddress ? `IP Camera (${ipAddress})` : 'Local Webcam'} | Landmarks: {showLandmarks ? 'On' : 'Off'}
+                            Stream Source: {ipAddress ? `IP Camera (${ipAddress})` : 'Local Webcam'} | Detections & Landmarks: {showLandmarks ? 'On' : 'Off'}
                         </div>
                     )}
                 </div>

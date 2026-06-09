@@ -39,6 +39,10 @@ export default function Home() {
     const handleAutoPitch = async () => {
         setSetupPhase('running');
         setManualPitchPts([]);
+        if (overlayRef.current) {
+            const ctx = overlayRef.current.getContext('2d');
+            if (ctx) ctx.clearRect(0, 0, overlayRef.current.width, overlayRef.current.height);
+        }
         await runService(undefined);
     };
 
@@ -58,6 +62,11 @@ export default function Home() {
     const handleStop = async () => {
         setIsStreaming(false);
         setSetupPhase('pending');
+        setManualPitchPts([]);
+        if (overlayRef.current) {
+            const ctx = overlayRef.current.getContext('2d');
+            if (ctx) ctx.clearRect(0, 0, overlayRef.current.width, overlayRef.current.height);
+        }
         await stopLbwLiveDetection();
     };
 
