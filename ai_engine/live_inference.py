@@ -415,6 +415,11 @@ def generate_frames():
                     }]
                     make_api_call_async("http://127.0.0.1:3000/api/detections/update", {"id": current_db_id, "results": results_data})
 
+            if shot_display_countdown > 0:
+                shot_display_countdown -= 1
+                if shot_display_countdown == 0:
+                    latched_shot_label = None
+
             cv2.rectangle(annotated_frame, (20, 20), (450, 130), (0, 0, 0), -1)
             cv2.putText(annotated_frame, f"TYPE: {ball_type}", (30, 50), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 255), 2)
             cv2.putText(annotated_frame, f"SPEED: {speed} km/h", (30, 80), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 2)

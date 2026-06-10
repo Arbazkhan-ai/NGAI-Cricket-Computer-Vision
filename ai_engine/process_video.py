@@ -234,6 +234,11 @@ def process_video(input_path, output_path, mode="mediapipe"):
         spin = spin_intensity(ball_track)
         ball_type = get_ball_type(ball_track, speed)
 
+        if shot_display_countdown > 0:
+            shot_display_countdown -= 1
+            if shot_display_countdown == 0:
+                latched_shot_label = None
+
         cv2.rectangle(frame, (20, 20), (450, 160), (0, 0, 0), -1)
         cv2.putText(frame, f"TYPE: {ball_type}", (30, 50), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 255), 2)
         cv2.putText(frame, f"SPEED: {speed} km/h", (30, 80), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 2)
