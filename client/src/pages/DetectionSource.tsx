@@ -164,6 +164,7 @@ export default function DetectionSource() {
                         }
                     }
                 } else {
+                    setAnalysisResult(null);
                     if (overlayRef.current) {
                         const overlayCtx = overlayRef.current.getContext('2d');
                         overlayCtx?.clearRect(0, 0, overlayCtx.canvas.width, overlayCtx.canvas.height);
