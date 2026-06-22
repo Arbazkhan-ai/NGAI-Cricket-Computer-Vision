@@ -161,12 +161,12 @@ export default function Home() {
                 }
                 
                 // Directly set lastDetection to the latest score response
-                setLastDetection({
+                setLastDetection((prev: any) => ({
                     decision: data.decision,
                     contact: data.contact,
-                    shot_label: data.shot_label,
-                    shot_conf: data.shot_conf
-                });
+                    shot_label: data.shot_label || prev?.shot_label,
+                    shot_conf: data.shot_conf || prev?.shot_conf
+                }));
             } catch (err) {}
         }, 1000);
         return () => clearInterval(intervalId);

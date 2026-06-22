@@ -103,8 +103,6 @@ export default function LiveDetection() {
                 
                 if (data.shot_label) {
                     setShotType({ label: data.shot_label, conf: data.shot_conf });
-                } else {
-                    setShotType(null);
                 }
                 
                 if (data.score > prevBackendScoreRef.current) {
