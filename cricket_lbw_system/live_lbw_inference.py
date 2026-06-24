@@ -25,6 +25,63 @@ frame_queue = queue.Queue(maxsize=300)
 stop_reader_thread = False
 reader_thread_obj = None
 
+
+class HTTPMJPEGStream:
+    def __init__(self, url):
+        self.url = url
+        self.stream = None
+        self.iterator = None
+        self.bytes = b''
+        self.opened = False
+        self._connect()
+        
+    def _connect(self):
+        import requests
+        try:
+            self.stream = requests.get(self.url, stream=True, timeout=5)
+            self.iterator = self.stream.iter_content(chunk_size=8192)
+            self.opened = True
+        except:
+            self.opened = False
+            
+    def isOpened(self):
+        return self.opened
+        
+    def read(self):
+        import cv2
+        import numpy as np
+        if not self.opened:
+            return False, None
+        try:
+            while True:
+                a = self.bytes.find(b'\xff\xd8')
+                b = self.bytes.find(b'\xff\xd9')
+                if a != -1 and b != -1:
+                    if b < a:
+                        self.bytes = self.bytes[b+2:]
+                        continue
+                    jpg = self.bytes[a:b+2]
+                    self.bytes = self.bytes[b+2:]
+                    frame = cv2.imdecode(np.frombuffer(jpg, dtype=np.uint8), cv2.IMREAD_COLOR)
+                    if frame is not None:
+                        return True, frame
+                chunk = next(self.iterator)
+                self.bytes += chunk
+        except StopIteration:
+            self.opened = False
+            return False, None
+        except Exception as e:
+            self.opened = False
+            return False, None
+            
+    def release(self):
+        self.opened = False
+        if self.stream:
+            self.stream.close()
+            
+    def get(self, prop_id):
+        return 0
+
 def camera_reader_loop():
     global camera, stop_reader_thread, frame_queue, connection_status
     while not stop_reader_thread:
@@ -61,6 +118,63 @@ def stop_camera_reader():
     if reader_thread_obj is not None:
         reader_thread_obj.join(timeout=1.0)
         reader_thread_obj = None
+
+
+class HTTPMJPEGStream:
+    def __init__(self, url):
+        self.url = url
+        self.stream = None
+        self.iterator = None
+        self.bytes = b''
+        self.opened = False
+        self._connect()
+        
+    def _connect(self):
+        import requests
+        try:
+            self.stream = requests.get(self.url, stream=True, timeout=5)
+            self.iterator = self.stream.iter_content(chunk_size=8192)
+            self.opened = True
+        except:
+            self.opened = False
+            
+    def isOpened(self):
+        return self.opened
+        
+    def read(self):
+        import cv2
+        import numpy as np
+        if not self.opened:
+            return False, None
+        try:
+            while True:
+                a = self.bytes.find(b'\xff\xd8')
+                b = self.bytes.find(b'\xff\xd9')
+                if a != -1 and b != -1:
+                    if b < a:
+                        self.bytes = self.bytes[b+2:]
+                        continue
+                    jpg = self.bytes[a:b+2]
+                    self.bytes = self.bytes[b+2:]
+                    frame = cv2.imdecode(np.frombuffer(jpg, dtype=np.uint8), cv2.IMREAD_COLOR)
+                    if frame is not None:
+                        return True, frame
+                chunk = next(self.iterator)
+                self.bytes += chunk
+        except StopIteration:
+            self.opened = False
+            return False, None
+        except Exception as e:
+            self.opened = False
+            return False, None
+            
+    def release(self):
+        self.opened = False
+        if self.stream:
+            self.stream.close()
+            
+    def get(self, prop_id):
+        return 0
         
     # Clear queue
     while not frame_queue.empty():
@@ -188,7 +302,7 @@ def connect_camera():
         if camera: camera.release()
         try:
             os.environ["OPENCV_FFMPEG_CAPTURE_OPTIONS"] = "timeout;5000"
-            if video_source == 0 and os.name == 'nt':
+            if isinstance(video_source, int) and os.name == 'nt':
                 camera = cv2.VideoCapture(video_source, cv2.CAP_DSHOW)
             else:
                 camera = cv2.VideoCapture(video_source)
@@ -290,13 +404,15 @@ def generate_frames():
 
         # 1. Detect Pitch (Auto) & Stumps (Auto)
         if not manual_pitch_pts:
-            new_pitch_roi = detector.detect_pitch(frame)
-            if new_pitch_roi:
-                pitch_roi = new_pitch_roi
+            if current_frame_idx % 15 == 0 or not pitch_roi:
+                new_pitch_roi = detector.detect_pitch(frame)
+                if new_pitch_roi:
+                    pitch_roi = new_pitch_roi
             
-        new_stump_rect = detector.detect_stumps(frame)
-        if new_stump_rect:
-            stump_rect = new_stump_rect
+            if current_frame_idx % 15 == 0 or stump_rect == [300, 400, 500, 700]:
+                new_stump_rect = detector.detect_stumps(frame)
+                if new_stump_rect:
+                    stump_rect = new_stump_rect
 
         # 2. Detect Objects
         objects = detector.detect_objects(frame, pitch_roi=pitch_roi, manual_pitch=manual_pitch_pts)

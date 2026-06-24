@@ -44,6 +44,31 @@ const storage = multer.diskStorage({
 
 const upload = multer({ storage: storage });
 
+
+// Handle mobile chunk uploads
+app.post('/api/mobile_upload', upload.single('video'), async (req, res) => {
+    if (!req.file) {
+        return res.status(400).json({ error: 'No video file provided' });
+    }
+    
+    const serviceType = req.body.type || 'shot';
+    const port = serviceType === 'lbw' ? 8081 : 8080;
+    
+    try {
+        const fetch = (await import('node-fetch')).default;
+        const pythonRes = await fetch(`http://127.0.0.1:${port}/api/mobile_chunk`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ filename: req.file.path })
+        });
+        const data = await pythonRes.json();
+        res.json({ status: 'ok', file: req.file.filename, python_response: data });
+    } catch (err) {
+        console.error('Mobile upload error:', err);
+        res.status(500).json({ error: 'Failed to notify Python engine' });
+    }
+});
+
 // Define Python Path (hardcoded for this environment to ensure venv usage)
 const PYTHON_PATH = path.join(__dirname, '..', '..', '..', 'venv', 'Scripts', 'python.exe');
 // Note: We need to go up 3 levels from backend/server.js? 

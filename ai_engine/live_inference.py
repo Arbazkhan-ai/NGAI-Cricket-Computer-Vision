@@ -19,52 +19,101 @@ import json
 import requests
 import threading
 import queue
+import time
 
 camera_lock = threading.Lock()
-frame_queue = queue.Queue(maxsize=300)
-stop_reader_thread = False
-reader_thread_obj = None
 
-def camera_reader_loop():
-    global camera, stop_reader_thread, frame_queue, connection_status
-    while not stop_reader_thread:
+import queue
+import threading
+
+frame_queue = queue.Queue(maxsize=1500)
+reader_thread = None
+stop_reader = False
+
+def camera_reader():
+    global camera, frame_queue, stop_reader, connection_status
+    while not stop_reader:
         with camera_lock:
             if camera is None or not camera.isOpened():
-                time.sleep(0.1)
+                time.sleep(0.01)
                 continue
             success, frame = camera.read()
         
         if success:
-            if frame_queue.full():
-                time.sleep(0.01)
-                continue
-            frame_queue.put(frame)
+            if not frame_queue.full():
+                frame_queue.put(frame)
+            else:
+                try:
+                    frame_queue.get_nowait()
+                except queue.Empty:
+                    pass
+                frame_queue.put(frame)
         else:
             with camera_lock:
                 connection_status = "Video Finished / Interrupted"
-                if camera:
-                    camera.release()
-                    camera = None
+                if camera: camera.release(); camera = None
             time.sleep(0.1)
 
-def start_camera_reader():
-    global stop_reader_thread, reader_thread_obj
-    stop_reader_thread = False
-    if reader_thread_obj is None or not reader_thread_obj.is_alive():
-        reader_thread_obj = threading.Thread(target=camera_reader_loop, daemon=True)
-        reader_thread_obj.start()
 
-def stop_camera_reader():
-    global stop_reader_thread, reader_thread_obj
-    stop_reader_thread = True
-    if reader_thread_obj is not None:
-        reader_thread_obj.join(timeout=1.0)
-        reader_thread_obj = None
-    while not frame_queue.empty():
+stop_reader_thread = False
+reader_thread_obj = None
+
+
+class HTTPMJPEGStream:
+    def __init__(self, url):
+        self.url = url
+        self.stream = None
+        self.iterator = None
+        self.bytes = b''
+        self.opened = False
+        self._connect()
+        
+    def _connect(self):
+        import requests
         try:
-            frame_queue.get_nowait()
-        except queue.Empty:
-            break
+            self.stream = requests.get(self.url, stream=True, timeout=5)
+            self.iterator = self.stream.iter_content(chunk_size=8192)
+            self.opened = True
+        except:
+            self.opened = False
+            
+    def isOpened(self):
+        return self.opened
+        
+    def read(self):
+        import cv2
+        import numpy as np
+        if not self.opened:
+            return False, None
+        try:
+            while True:
+                a = self.bytes.find(b'\xff\xd8')
+                b = self.bytes.find(b'\xff\xd9')
+                if a != -1 and b != -1:
+                    if b < a:
+                        self.bytes = self.bytes[b+2:]
+                        continue
+                    jpg = self.bytes[a:b+2]
+                    self.bytes = self.bytes[b+2:]
+                    frame = cv2.imdecode(np.frombuffer(jpg, dtype=np.uint8), cv2.IMREAD_COLOR)
+                    if frame is not None:
+                        return True, frame
+                chunk = next(self.iterator)
+                self.bytes += chunk
+        except StopIteration:
+            self.opened = False
+            return False, None
+        except Exception as e:
+            self.opened = False
+            return False, None
+            
+    def release(self):
+        self.opened = False
+        if self.stream:
+            self.stream.close()
+            
+    def get(self, prop_id):
+        return 0
 
 def create_new_detection_sync(image_path="Live Stream"):
     try:
@@ -105,7 +154,7 @@ SEQ_LEN = 30
 CONF_THRESHOLD = 0.70
 IGNORE_LABELS  = {"Batsman"}
 SHOT_DISPLAY_FRAMES = 600
-MAX_MISSING_FRAMES = 10
+MAX_MISSING_FRAMES = 30
 
 # Global State (Models Loaded on Startup)
 print("--- PRE-LOADING MODELS FOR INSTANT START ---")
@@ -167,6 +216,8 @@ def draw_trail(frame, track):
         cv2.circle(frame, pt, r, (0, 255, 255), -1)
     return frame
 
+
+
 @app.route('/api/connect', methods=['POST'])
 def connect_camera():
     global camera, connection_status, current_ip, ball_track, ball_hit_bat, pose_buffer, manual_pitch_pts, show_landmarks_flag, session_log, current_db_id
@@ -182,8 +233,20 @@ def connect_camera():
     session_log = []
     ball_hit_bat = False
     current_db_id = None
+    global frame_queue, stop_reader, reader_thread
+    stop_reader = True
+    if reader_thread:
+        reader_thread.join(timeout=1.0)
     
-    stop_camera_reader()
+    while not frame_queue.empty():
+        try:
+            frame_queue.get_nowait()
+        except:
+            pass
+            
+    stop_reader = False
+
+    
     with camera_lock:
         if camera: camera.release()
     
@@ -196,7 +259,10 @@ def connect_camera():
     print(f"Connecting to: {video_source}")
     with camera_lock:
         if camera: camera.release()
-        if video_source == 0 and os.name == 'nt':
+        if isinstance(video_source, str) and (video_source.startswith("http://") or video_source.startswith("https://")):
+            print(f"Using HTTPMJPEGStream for {video_source}")
+            camera = HTTPMJPEGStream(video_source)
+        elif isinstance(video_source, int) and os.name == 'nt':
             camera = cv2.VideoCapture(video_source, cv2.CAP_DSHOW)
         else:
             camera = cv2.VideoCapture(video_source)
@@ -204,7 +270,8 @@ def connect_camera():
     if camera and camera.isOpened():
         connection_status = "Connected"
         current_ip = ip
-        start_camera_reader()
+        reader_thread = threading.Thread(target=camera_reader, daemon=True)
+        reader_thread.start()
         return jsonify({"status": "success", "message": "Connected"})
     else:
         connection_status = "Connection Failed"
@@ -248,38 +315,50 @@ def generate_frames():
     tracked_trajectory = []
     last_shot_label = None
 
+    current_chunk_cap = None
+    pitch_boxes_cache = []
+    stump_boxes_cache = []
+
+    current_chunk_file = None
+
     while True:
+        current_frame_idx += 1
         try:
             frame = frame_queue.get(timeout=0.1)
-            success = True
         except queue.Empty:
-            success = False
             with camera_lock:
-                if camera is None or not camera.isOpened():
-                    frame = np.zeros((480, 640, 3), dtype=np.uint8)
-                    cv2.putText(frame, connection_status, (50, 240), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (255, 255, 255), 2)
-                    ret, buffer = cv2.imencode('.jpg', frame)
-                    frame_bytes = buffer.tobytes()
-                    yield (b'--frame\r\n'
-                           b'Content-Type: image/jpeg\r\n\r\n' + frame_bytes + b'\r\n')
+                is_camera_none = camera is None
+                is_connected = connection_status == "Connected"
+            
+            if is_camera_none and not is_connected:
+                msg = connection_status
+            else:
+                msg = "Buffering Live Stream..."
+                
+            blank_frame = np.zeros((480, 640, 3), dtype=np.uint8)
+            cv2.putText(blank_frame, msg, (50, 240), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (255, 255, 255), 2)
+            ret, buffer = cv2.imencode('.jpg', blank_frame)
+            frame_bytes = buffer.tobytes()
+            yield (b'--frame\r\n' b'Content-Type: image/jpeg\r\n\r\n' + frame_bytes + b'\r\n')
             continue
 
-            # Flip frame horizontally to fix mirroring (Left -> Right, Right -> Left)
-            # frame = cv2.flip(frame, 1)
+        # Flip frame horizontally to fix mirroring (Left -> Right, Right -> Left)
+        # frame = cv2.flip(frame, 1)
 
-            h, w = frame.shape[:2]
-            
-            # Keep original frame for AI processing
-            annotated_frame = frame.copy()
-            
-            # AI Inference or Manual Pitch
-            pitch_boxes = []
-            if manual_pitch_pts and len(manual_pitch_pts) == 4:
-                xs = [p[0] for p in manual_pitch_pts]
-                ys = [p[1] for p in manual_pitch_pts]
-                px1, py1, px2, py2 = min(xs), min(ys), max(xs), max(ys)
-                pitch_boxes.append((px1, py1, px2, py2))
-            else:
+        h, w = frame.shape[:2]
+        
+        # Keep original frame for AI processing
+        annotated_frame = frame.copy()
+        
+        # AI Inference or Manual Pitch
+        pitch_boxes = []
+        if manual_pitch_pts and len(manual_pitch_pts) == 4:
+            xs = [p[0] for p in manual_pitch_pts]
+            ys = [p[1] for p in manual_pitch_pts]
+            px1, py1, px2, py2 = min(xs), min(ys), max(xs), max(ys)
+            pitch_boxes.append((px1, py1, px2, py2))
+        else:
+            if current_frame_idx % 15 == 0 or not pitch_boxes_cache:
                 results_pitch = pitch_model.predict(frame, conf=0.5, verbose=False)
                 best_pitch = None
                 best_conf = 0
@@ -292,206 +371,212 @@ def generate_frames():
                                 px1, py1, px2, py2 = box.xyxy[0].tolist()
                                 best_pitch = (px1, py1, px2, py2)
                 if best_pitch:
-                    pitch_boxes.append(best_pitch)
+                    pitch_boxes_cache = [best_pitch]
+            pitch_boxes = pitch_boxes_cache
 
-            stump_boxes = []
+        stump_boxes = []
+        if current_frame_idx % 15 == 0 or not stump_boxes_cache:
             results_stumps = stump_model.predict(frame, conf=0.25, verbose=False)
+            cache_stumps = []
             for res in results_stumps:
                 for box in res.boxes:
                     if int(box.cls[0]) == 0:
                         sx1, sy1, sx2, sy2 = box.xyxy[0].tolist()
-                        stump_boxes.append((sx1, sy1, sx2, sy2))
+                        cache_stumps.append((sx1, sy1, sx2, sy2))
+            if cache_stumps:
+                stump_boxes_cache = cache_stumps
+        stump_boxes = stump_boxes_cache
 
-            results_ball = ball_model(frame, verbose=False, conf=0.15)
-            all_batsmen = []
-            all_bats = []
-            current_ball_box = None
+        results_ball = ball_model(frame, verbose=False, conf=0.15)
+        all_batsmen = []
+        all_bats = []
+        current_ball_box = None
+        
+        # Just collect the boxes first
+        for box in results_ball[0].boxes:
+            cls_id = int(box.cls[0])
+            cls_name = ball_model.names[cls_id].lower()
+            conf = float(box.conf[0])
+            coords = map(int, box.xyxy[0].tolist())
+            x1, y1, x2, y2 = coords
             
-            # Just collect the boxes first
-            for box in results_ball[0].boxes:
-                cls_id = int(box.cls[0])
-                cls_name = ball_model.names[cls_id].lower()
-                conf = float(box.conf[0])
-                coords = map(int, box.xyxy[0].tolist())
-                x1, y1, x2, y2 = coords
-                
-                if cls_name == 'batsman' or cls_id == 2: all_batsmen.append((x1, y1, x2, y2, cls_name, conf))
-                elif cls_name == 'ball' or cls_id == 0: current_ball_box = (x1, y1, x2, y2, cls_name, conf)
-                elif cls_name == 'bat' or cls_id == 1: all_bats.append((x1, y1, x2, y2, cls_name, conf))
+            if cls_name == 'batsman' or cls_id == 2: all_batsmen.append((x1, y1, x2, y2, cls_name, conf))
+            elif cls_name == 'ball' or cls_id == 0: current_ball_box = (x1, y1, x2, y2, cls_name, conf)
+            elif cls_name == 'bat' or cls_id == 1: all_bats.append((x1, y1, x2, y2, cls_name, conf))
 
-            # Logic: Find Active Batsman
-            batsman_box = None
-            if all_batsmen:
-                for bman in all_batsmen:
-                    cx, cy = (bman[0]+bman[2])//2, (bman[1]+bman[3])//2
-                    # Exact pitch filter logic matching process_video.py
-                    if manual_pitch_pts and len(manual_pitch_pts) == 4:
-                        import numpy as np
-                        import cv2
-                        pts = np.array(manual_pitch_pts, np.int32)
-                        on_pitch = cv2.pointPolygonTest(pts, (float(cx), float(cy)), False) >= 0
-                    else:
-                        on_pitch = True if not pitch_boxes else any(px1 <= cx <= px2 and py1 <= cy <= py2 for (px1, py1, px2, py2) in pitch_boxes)
-                    
-                    if not on_pitch: continue
-                    
-                    has_bat = any((bman[0]-20) <= (bat[0]+bat[2])//2 <= (bman[2]+20) and (bman[1]-20) <= (bat[1]+bat[3])//2 <= (bman[3]+20) for bat in all_bats)
-                    if has_bat:
-                        batsman_box = bman; break
-
-            current_shot_label = "Waiting..."
-            current_shot_conf = 0.0
-
-            if batsman_box:
-                bx1, by1, bx2, by2, _, _ = batsman_box
-                bx1, by1, bx2, by2 = max(0, int(bx1)), max(0, int(by1)), min(w, int(bx2)), min(h, int(by2))
-                crop = frame[by1:by2, bx1:bx2]
-                if crop.size > 0:
-                    res_pose = pose.process(cv2.cvtColor(crop, cv2.COLOR_BGR2RGB))
-                    if res_pose.pose_landmarks:
-                        cw, ch = bx2-bx1, by2-by1
-                        feat = []
-                        for p in res_pose.pose_landmarks.landmark:
-                            feat.extend([(p.x * cw + bx1)/w, (p.y * ch + by1)/h, p.z, p.visibility])
-                        
-                        if show_landmarks_flag:
-                            mp_drawing.draw_landmarks(crop, res_pose.pose_landmarks, mp_pose.POSE_CONNECTIONS)
-                            annotated_frame[by1:by2, bx1:bx2] = crop
-                            
-                        pose_buffer.append(feat)
-                        if len(pose_buffer) > SEQ_LEN: pose_buffer.pop(0)
-                        if len(pose_buffer) == SEQ_LEN and shot_model:
-                            X = np.array(pose_buffer, dtype=np.float32)
-                            X_scaled = scaler.transform(X).reshape(1, SEQ_LEN, -1).astype(np.float32)
-                            ort_inputs = {shot_model.get_inputs()[0].name: X_scaled}
-                            preds = shot_model.run(None, ort_inputs)[0]
-                            idx = np.argmax(preds[0])
-                            if classes[idx] not in IGNORE_LABELS and preds[0][idx] >= CONF_THRESHOLD:
-                                current_shot_label, current_shot_conf = classes[idx], float(preds[0][idx])
-
-            if current_ball_box:
-                x1, y1, x2, y2, cls_name, conf = current_ball_box
-                cx, cy = int((x1+x2)/2), int((y1+y2)/2)
-                
-                # Pitch Constraint with generous margin
-                near_pitch = True if not pitch_boxes else any((pbox[0]-250) <= cx <= (pbox[2]+250) and (pbox[1]-250) <= cy <= (pbox[3]+250) for pbox in pitch_boxes)
-                if near_pitch:
-                    ball_track.append((cx, cy))
-                    frames_without_ball = 0
-                    if len(ball_track) == 1:
-                        current_db_id = create_new_detection_sync("Live Stream")
-                        tracked_trajectory = []
+        # Logic: Find Active Batsman
+        batsman_box = None
+        if all_batsmen:
+            for bman in all_batsmen:
+                cx, cy = (bman[0]+bman[2])//2, (bman[1]+bman[3])//2
+                # Exact pitch filter logic matching process_video.py
+                if manual_pitch_pts and len(manual_pitch_pts) == 4:
+                    import numpy as np
+                    import cv2
+                    pts = np.array(manual_pitch_pts, np.int32)
+                    on_pitch = cv2.pointPolygonTest(pts, (float(cx), float(cy)), False) >= 0
                 else:
-                    frames_without_ball += 1
+                    on_pitch = True if not pitch_boxes else any(px1 <= cx <= px2 and py1 <= cy <= py2 for (px1, py1, px2, py2) in pitch_boxes)
+                
+                if not on_pitch: continue
+                
+                has_bat = any((bman[0]-20) <= (bat[0]+bat[2])//2 <= (bman[2]+20) and (bman[1]-20) <= (bat[1]+bat[3])//2 <= (bman[3]+20) for bat in all_bats)
+                if has_bat:
+                    batsman_box = bman; break
+
+        current_shot_label = "Waiting..."
+        current_shot_conf = 0.0
+
+        if batsman_box:
+            bx1, by1, bx2, by2, _, _ = batsman_box
+            bx1, by1, bx2, by2 = max(0, int(bx1)), max(0, int(by1)), min(w, int(bx2)), min(h, int(by2))
+            crop = frame[by1:by2, bx1:bx2]
+            if crop.size > 0:
+                res_pose = pose.process(cv2.cvtColor(crop, cv2.COLOR_BGR2RGB))
+                if res_pose.pose_landmarks:
+                    cw, ch = bx2-bx1, by2-by1
+                    feat = []
+                    for p in res_pose.pose_landmarks.landmark:
+                        feat.extend([(p.x * cw + bx1)/w, (p.y * ch + by1)/h, p.z, p.visibility])
+                    
+                    if show_landmarks_flag:
+                        mp_drawing.draw_landmarks(crop, res_pose.pose_landmarks, mp_pose.POSE_CONNECTIONS)
+                        annotated_frame[by1:by2, bx1:bx2] = crop
+                        
+                    pose_buffer.append(feat)
+                    if len(pose_buffer) > SEQ_LEN: pose_buffer.pop(0)
+                    if len(pose_buffer) == SEQ_LEN and shot_model:
+                        X = np.array(pose_buffer, dtype=np.float32)
+                        X_scaled = scaler.transform(X).reshape(1, SEQ_LEN, -1).astype(np.float32)
+                        ort_inputs = {shot_model.get_inputs()[0].name: X_scaled}
+                        preds = shot_model.run(None, ort_inputs)[0]
+                        idx = np.argmax(preds[0])
+                        if classes[idx] not in IGNORE_LABELS and preds[0][idx] >= CONF_THRESHOLD:
+                            current_shot_label, current_shot_conf = classes[idx], float(preds[0][idx])
+
+        if current_ball_box:
+            x1, y1, x2, y2, cls_name, conf = current_ball_box
+            cx, cy = int((x1+x2)/2), int((y1+y2)/2)
+            
+            # Pitch Constraint with generous margin
+            near_pitch = True if not pitch_boxes else any((pbox[0]-250) <= cx <= (pbox[2]+250) and (pbox[1]-250) <= cy <= (pbox[3]+250) for pbox in pitch_boxes)
+            if near_pitch:
+                ball_track.append((cx, cy))
+                frames_without_ball = 0
+                if len(ball_track) == 1:
+                    current_db_id = create_new_detection_sync("Live Stream")
+                    tracked_trajectory = []
             else:
                 frames_without_ball += 1
-                if frames_without_ball > MAX_MISSING_FRAMES: ball_track = []; ball_hit_bat = False
+        else:
+            frames_without_ball += 1
+            if frames_without_ball > MAX_MISSING_FRAMES: ball_track = []; ball_hit_bat = False
 
-            if current_ball_box and batsman_box and all_bats:
-                bcx, bcy = (current_ball_box[0]+current_ball_box[2])/2, (current_ball_box[1]+current_ball_box[3])/2
-                
-                # Verify the ball is actually moving (not a false static detection on the bat/glove)
-                is_moving = False
-                if len(ball_track) >= 3:
-                    dx = ball_track[-1][0] - ball_track[0][0]
-                    dy = ball_track[-1][1] - ball_track[0][1]
-                    if abs(dx) > 10 or abs(dy) > 10:
-                        is_moving = True
-
-                if is_moving:
-                    ball_touched_bat = False
-                    for bat in all_bats:
-                        bat_cx, bat_cy = (bat[0]+bat[2])/2, (bat[1]+bat[3])/2
-                        if (batsman_box[0]-50) <= bat_cx <= (batsman_box[2]+50) and (batsman_box[1]-50) <= bat_cy <= (batsman_box[3]+50):
-                            # Relaxed intersection for fast moving objects and motion blur
-                            if (bat[0]-50) <= bcx <= (bat[2]+50) and (bat[1]-50) <= bcy <= (bat[3]+50):
-                                ball_touched_bat = True
-                                break
-                                
-                    if ball_touched_bat:
-                        if not ball_hit_bat:
-                            # NEW HIT! Increment score
-                            game_score += 1
-                            last_hit_frame = current_frame_idx
-                            if current_shot_label and current_shot_label != "Waiting...":
-                                speed = estimate_speed(ball_track)
-                                ball_type = get_ball_type(ball_track, speed)
-                                session_log.append({
-                                    "time": time.strftime("%I:%M:%S %p"),
-                                    "type": "shot",
-                                    "label": current_shot_label,
-                                    "conf": current_shot_conf,
-                                    "speed": speed,
-                                    "ball_type": ball_type
-                                })
-                        
-                        ball_hit_bat = True
-                    if current_shot_label != "Waiting...":
-                        latched_shot_label, latched_shot_conf = current_shot_label, current_shot_conf
-                        shot_display_countdown = SHOT_DISPLAY_FRAMES
-
-            # Draw Pitch
-            if manual_pitch_pts and len(manual_pitch_pts) == 4:
-                pts = np.array(manual_pitch_pts, np.int32)
-                cv2.polylines(annotated_frame, [pts], True, (255, 255, 0), 2)
-                cv2.putText(annotated_frame, "MANUAL PITCH", (int(manual_pitch_pts[0][0]), int(manual_pitch_pts[0][1]) - 5), 
-                            cv2.FONT_HERSHEY_SIMPLEX, 0.4, (255, 255, 0), 1)
-            else:
-                for (px1, py1, px2, py2) in pitch_boxes:
-                    cv2.rectangle(annotated_frame, (int(px1), int(py1)), (int(px2), int(py2)), (255, 255, 255), 1, cv2.LINE_AA)
-                    cv2.putText(annotated_frame, "AUTO PITCH", (int(px1), int(py1) - 5), cv2.FONT_HERSHEY_SIMPLEX, 0.4, (255, 255, 255), 1)
+        if current_ball_box and batsman_box and all_bats:
+            bcx, bcy = (current_ball_box[0]+current_ball_box[2])/2, (current_ball_box[1]+current_ball_box[3])/2
             
-            # Draw Balls, Batsmen, Bats
-            if show_landmarks_flag:
-                for item in all_batsmen + all_bats + ([current_ball_box] if current_ball_box else []):
-                    bx1, by1, bx2, by2, cls_name, conf = item
-                    color = (0, 255, 0) if cls_name == 'batsman' else (255, 0, 0) if cls_name == 'ball' else (0, 0, 255)
-                    cv2.rectangle(annotated_frame, (int(bx1), int(by1)), (int(bx2), int(by2)), color, 2)
-                    cv2.putText(annotated_frame, f"{cls_name.upper()} {conf:.2f}", (int(bx1), int(by1)-10), cv2.FONT_HERSHEY_SIMPLEX, 0.5, color, 2)
+            # Verify the ball is actually moving (not a false static detection on the bat/glove)
+            is_moving = False
+            if len(ball_track) >= 3:
+                dx = ball_track[-1][0] - ball_track[0][0]
+                dy = ball_track[-1][1] - ball_track[0][1]
+                if abs(dx) > 10 or abs(dy) > 10:
+                    is_moving = True
 
-                for (sx1, sy1, sx2, sy2) in stump_boxes:
-                    cv2.rectangle(annotated_frame, (int(sx1), int(sy1)), (int(sx2), int(sy2)), (0, 0, 255), 2)
-                    cv2.putText(annotated_frame, "STUMPS", (int(sx1), int(sy1) - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 0, 255), 2)
+            if is_moving:
+                ball_touched_bat = False
+                for bat in all_bats:
+                    bat_cx, bat_cy = (bat[0]+bat[2])/2, (bat[1]+bat[3])/2
+                    if (batsman_box[0]-50) <= bat_cx <= (batsman_box[2]+50) and (batsman_box[1]-50) <= bat_cy <= (batsman_box[3]+50):
+                        # Relaxed intersection for fast moving objects and motion blur
+                        if (bat[0]-50) <= bcx <= (bat[2]+50) and (bat[1]-50) <= bcy <= (bat[3]+50):
+                            ball_touched_bat = True
+                            break
+                            
+                if ball_touched_bat:
+                    if not ball_hit_bat:
+                        # NEW HIT! Increment score
+                        game_score += 1
+                        last_hit_frame = current_frame_idx
+                        if current_shot_label and current_shot_label != "Waiting...":
+                            speed = estimate_speed(ball_track)
+                            ball_type = get_ball_type(ball_track, speed)
+                            session_log.append({
+                                "time": time.strftime("%I:%M:%S %p"),
+                                "type": "shot",
+                                "label": current_shot_label,
+                                "conf": current_shot_conf,
+                                "speed": speed,
+                                "ball_type": ball_type
+                            })
+                    
+                    ball_hit_bat = True
+                if current_shot_label != "Waiting...":
+                    latched_shot_label, latched_shot_conf = current_shot_label, current_shot_conf
+                    shot_display_countdown = SHOT_DISPLAY_FRAMES
 
-            # Trail & Physics
-            annotated_frame = draw_trail(annotated_frame, ball_track)
-            
-            # Hawk-Eye Stats
-            speed = estimate_speed(ball_track)
-            swing = swing_amount(ball_track)
-            spin = spin_intensity(ball_track)
-            ball_type = get_ball_type(ball_track, speed)
+        # Draw Pitch
+        if manual_pitch_pts and len(manual_pitch_pts) == 4:
+            pts = np.array(manual_pitch_pts, np.int32)
+            cv2.polylines(annotated_frame, [pts], True, (255, 255, 0), 2)
+            cv2.putText(annotated_frame, "MANUAL PITCH", (int(manual_pitch_pts[0][0]), int(manual_pitch_pts[0][1]) - 5), 
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.4, (255, 255, 0), 1)
+        else:
+            for (px1, py1, px2, py2) in pitch_boxes:
+                cv2.rectangle(annotated_frame, (int(px1), int(py1)), (int(px2), int(py2)), (255, 255, 255), 1, cv2.LINE_AA)
+                cv2.putText(annotated_frame, "AUTO PITCH", (int(px1), int(py1) - 5), cv2.FONT_HERSHEY_SIMPLEX, 0.4, (255, 255, 255), 1)
+        
+        # Draw Balls, Batsmen, Bats
+        if show_landmarks_flag:
+            for item in all_batsmen + all_bats + ([current_ball_box] if current_ball_box else []):
+                bx1, by1, bx2, by2, cls_name, conf = item
+                color = (0, 255, 0) if cls_name == 'batsman' else (255, 0, 0) if cls_name == 'ball' else (0, 0, 255)
+                cv2.rectangle(annotated_frame, (int(bx1), int(by1)), (int(bx2), int(by2)), color, 2)
+                cv2.putText(annotated_frame, f"{cls_name.upper()} {conf:.2f}", (int(bx1), int(by1)-10), cv2.FONT_HERSHEY_SIMPLEX, 0.5, color, 2)
 
-            if len(ball_track) > 0:
-                tracked_trajectory = list(ball_track)
+            for (sx1, sy1, sx2, sy2) in stump_boxes:
+                cv2.rectangle(annotated_frame, (int(sx1), int(sy1)), (int(sx2), int(sy2)), (0, 0, 255), 2)
+                cv2.putText(annotated_frame, "STUMPS", (int(sx1), int(sy1) - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 0, 255), 2)
 
-            if current_db_id is not None:
-                shot_changed = (latched_shot_label != last_shot_label)
-                if current_frame_idx % 3 == 0 or shot_changed:
-                    last_shot_label = latched_shot_label
-                    results_data = [{
-                        "class_name": latched_shot_label if latched_shot_label else "Waiting...",
-                        "conf": latched_shot_conf if latched_shot_label else 0.0,
-                        "speed": speed if speed else 0,
-                        "swing": swing if swing else 0,
-                        "spin": spin if spin else "Low",
-                        "ball_type": ball_type if ball_type else "Normal",
-                        "trajectory": tracked_trajectory,
-                        "type": "live_ball"
-                    }]
-                    make_api_call_async("http://127.0.0.1:3000/api/detections/update", {"id": current_db_id, "results": results_data})
+        # Trail & Physics
+        annotated_frame = draw_trail(annotated_frame, ball_track)
+        
+        # Hawk-Eye Stats
+        speed = estimate_speed(ball_track)
+        swing = swing_amount(ball_track)
+        spin = spin_intensity(ball_track)
+        ball_type = get_ball_type(ball_track, speed)
 
-            if shot_display_countdown > 0:
-                shot_display_countdown -= 1
-                if shot_display_countdown == 0:
-                    latched_shot_label = None
+        if len(ball_track) > 0:
+            tracked_trajectory = list(ball_track)
 
-            cv2.rectangle(annotated_frame, (20, 20), (450, 130), (0, 0, 0), -1)
-            cv2.putText(annotated_frame, f"TYPE: {ball_type}", (30, 50), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 255), 2)
-            cv2.putText(annotated_frame, f"SPEED: {speed} km/h", (30, 80), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 2)
-            cv2.putText(annotated_frame, f"SWING: {swing}px | SPIN: {spin}", (30, 110), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 0), 2)
-            
-            frame = annotated_frame
+        if current_db_id is not None:
+            shot_changed = (latched_shot_label != last_shot_label)
+            if current_frame_idx % 3 == 0 or shot_changed:
+                last_shot_label = latched_shot_label
+                results_data = [{
+                    "class_name": latched_shot_label if latched_shot_label else "Waiting...",
+                    "conf": latched_shot_conf if latched_shot_label else 0.0,
+                    "speed": speed if speed else 0,
+                    "swing": swing if swing else 0,
+                    "spin": spin if spin else "Low",
+                    "ball_type": ball_type if ball_type else "Normal",
+                    "trajectory": tracked_trajectory,
+                    "type": "live_ball"
+                }]
+                make_api_call_async("http://127.0.0.1:3000/api/detections/update", {"id": current_db_id, "results": results_data})
+
+        if shot_display_countdown > 0:
+            shot_display_countdown -= 1
+            if shot_display_countdown == 0:
+                latched_shot_label = None
+
+        cv2.rectangle(annotated_frame, (20, 20), (450, 130), (0, 0, 0), -1)
+        cv2.putText(annotated_frame, f"TYPE: {ball_type}", (30, 50), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 255), 2)
+        cv2.putText(annotated_frame, f"SPEED: {speed} km/h", (30, 80), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 2)
+        cv2.putText(annotated_frame, f"SWING: {swing}px | SPIN: {spin}", (30, 110), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 0), 2)
+        
+        frame = annotated_frame
 
         ret, buffer = cv2.imencode('.jpg', frame)
         if not ret: continue
