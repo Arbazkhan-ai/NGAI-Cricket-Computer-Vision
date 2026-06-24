@@ -15,7 +15,7 @@ class Detector:
         self.stump_model = YOLO(stump_model_path)
         
     def detect_pitch(self, frame):
-        results = self.pitch_model(frame, verbose=False)[0]
+        results = self.pitch_model(frame, verbose=False, conf=0.5)[0]
         for box in results.boxes:
             if int(box.cls[0]) == 1: # Pitch
                 return list(map(int, box.xyxy[0]))
@@ -35,7 +35,7 @@ class Detector:
 
 
     def detect_objects(self, frame, pitch_roi=None, manual_pitch=None):
-        results = self.ball_model(frame, verbose=False)[0]
+        results = self.ball_model(frame, verbose=False, conf=0.15)[0]
         detections = {
             'ball': None,
             'batsman': None,
@@ -50,17 +50,15 @@ class Detector:
             x1, y1, x2, y2 = map(int, box.xyxy[0])
             cx, cy = (x1 + x2) // 2, (y1 + y2) // 2
 
-            # Filter by Pitch (Manual Polygon takes priority, then Auto ROI)
-            # Add a generous margin so we don't accidentally filter out the batsman
+            # Exact pitch filter logic matching process_video.py
             if manual_pitch and len(manual_pitch) == 4:
                 pts = np.array(manual_pitch, np.int32)
-                if cv2.pointPolygonTest(pts, (float(cx), float(cy)), True) < -250:
+                if cv2.pointPolygonTest(pts, (float(cx), float(cy)), False) < 0:
                     continue
             elif pitch_roi:
                 px1, py1, px2, py2 = pitch_roi
-                if not (px1 - 250 <= cx <= px2 + 250 and py1 - 250 <= cy <= py2 + 250):
+                if not (px1 <= cx <= px2 and py1 <= cy <= py2):
                     continue
-
             # Class mapping: 0: Ball, 1: Bat, 2: Batsman
             key = None
             if cls == 0: key = 'ball'

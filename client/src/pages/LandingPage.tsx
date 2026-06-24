@@ -1,11 +1,64 @@
 
-import { ArrowRight, Activity, Target, Zap, Smartphone, Play, Camera, Cpu, ShieldCheck } from 'lucide-react';
+import { useState, useEffect } from 'react';
+import { ArrowRight, Activity, Target, Zap, Smartphone, Play, Camera, Cpu, ShieldCheck, X } from 'lucide-react';
 import { useNavigate } from 'react-router-dom';
+import { startLbwLiveDetection, stopLbwLiveDetection } from '../services/api';
 import cricketLogo from '../assets/cricket_logo.png';
 import cricketSketch from '../assets/cricket_sketch.png';
 
 export default function LandingPage() {
     const navigate = useNavigate();
+    const [showDemo, setShowDemo] = useState(false);
+    const [streamKey, setStreamKey] = useState(Date.now());
+    const [demoStatus, setDemoStatus] = useState('Initializing...');
+    const [lbwDecision, setLbwDecision] = useState<string | null>(null);
+    const [firstContact, setFirstContact] = useState<string | null>(null);
+    const [shotType, setShotType] = useState<{label: string, conf: number} | null>(null);
+    const [recentDetections, setRecentDetections] = useState<string[]>([]);
+
+    useEffect(() => {
+        if (showDemo) {
+            setDemoStatus('Starting models...');
+            startLbwLiveDetection('0', '', true)
+                .then(() => {
+                    setDemoStatus('Running');
+                    setStreamKey(Date.now());
+                })
+                .catch((e) => setDemoStatus('Error: ' + e.message));
+        } else {
+            stopLbwLiveDetection().catch(() => {});
+            setLbwDecision(null);
+            setFirstContact(null);
+            setShotType(null);
+            setRecentDetections([]);
+        }
+        return () => {
+            if (showDemo) stopLbwLiveDetection().catch(() => {});
+        };
+    }, [showDemo]);
+
+    useEffect(() => {
+        if (demoStatus !== 'Running') return;
+        const interval = setInterval(async () => {
+            try {
+                const res = await fetch(`http://127.0.0.1:8081/get_score`);
+                const data = await res.json();
+                setLbwDecision(data.decision);
+                setFirstContact(data.contact);
+                if (data.shot_label && data.shot_label !== 'None' && data.shot_label !== 'Analyzing...') {
+                    setShotType({ label: data.shot_label, conf: data.shot_conf });
+                    setRecentDetections(prev => {
+                        const logEntry = `${data.shot_label} (${Math.round(data.shot_conf * 100)}%)`;
+                        if (!prev.includes(logEntry)) {
+                            return [logEntry, ...prev].slice(0, 5);
+                        }
+                        return prev;
+                    });
+                }
+            } catch (err) {}
+        }, 500);
+        return () => clearInterval(interval);
+    }, [demoStatus]);
 
     return (
         <div className="min-h-screen bg-gray-50 flex flex-col font-sans overflow-x-hidden">
@@ -64,7 +117,7 @@ export default function LandingPage() {
                                 Start Analyzing
                                 <ArrowRight className="w-5 h-5 group-hover:translate-x-1 transition-transform" />
                             </button>
-                            <button className="px-8 py-4 bg-white text-gray-700 hover:text-gray-900 border border-gray-200 hover:border-gray-300 rounded-2xl font-bold text-lg shadow-sm hover:shadow-md transition-all flex items-center justify-center gap-2">
+                            <button onClick={() => setShowDemo(true)} className="px-8 py-4 bg-white text-gray-700 hover:text-gray-900 border border-gray-200 hover:border-gray-300 rounded-2xl font-bold text-lg shadow-sm hover:shadow-md transition-all flex items-center justify-center gap-2">
                                 <Play className="w-5 h-5" />
                                 Watch Demo
                             </button>
@@ -204,6 +257,100 @@ export default function LandingPage() {
                     </div>
                 </div>
             </footer>
+
+            {/* Live Demo Modal */}
+            {showDemo && (
+                <div className="fixed inset-0 z-[100] bg-black/80 backdrop-blur-sm flex items-center justify-center p-4">
+                    <div className="bg-white rounded-3xl overflow-hidden w-full max-w-5xl shadow-2xl animate-in zoom-in-95 duration-300 flex flex-col">
+                        <div className="p-6 border-b border-gray-100 flex items-center justify-between bg-gray-50">
+                            <div>
+                                <h3 className="text-2xl font-bold text-gray-900 flex items-center gap-2">
+                                    <Activity className="text-emerald-600 animate-pulse" />
+                                    Live Model Integration Demo
+                                </h3>
+                                <p className="text-gray-500 text-sm mt-1">Testing LBW, Trajectory, Pose, and Shot Classification on Live Video (Unified Model)</p>
+                            </div>
+                            <button
+                                onClick={() => setShowDemo(false)}
+                                className="p-2 bg-gray-200 hover:bg-gray-300 rounded-full text-gray-600 transition-colors"
+                            >
+                                <X className="w-6 h-6" />
+                            </button>
+                        </div>
+                        <div className="flex flex-col lg:flex-row bg-gray-900 min-h-[500px] lg:min-h-[600px]">
+                            {/* Video Feed */}
+                            <div className="flex-1 p-8 flex items-center justify-center">
+                                {demoStatus === 'Running' ? (
+                                    <img
+                                        src={`http://127.0.0.1:8081/video_feed?t=${streamKey}`}
+                                        alt="Live Demo Stream"
+                                        className="w-full h-full max-h-[600px] object-contain rounded-xl border border-gray-800 bg-black"
+                                        onError={(e) => setDemoStatus('Error loading stream')}
+                                    />
+                                ) : (
+                                    <div className="text-center text-white flex flex-col items-center">
+                                        <Activity className="w-12 h-12 mb-4 animate-bounce text-emerald-500" />
+                                        <p className="text-xl font-medium">{demoStatus}</p>
+                                    </div>
+                                )}
+                            </div>
+
+                            {/* Sidebar / Stats */}
+                            {demoStatus === 'Running' && (
+                                <div className="w-full lg:w-80 bg-gray-800 p-6 flex flex-col border-t lg:border-t-0 lg:border-l border-gray-700">
+                                    <h4 className="text-white font-bold text-lg mb-6 flex items-center gap-2">
+                                        <Target className="w-5 h-5 text-emerald-500" />
+                                        Current Status
+                                    </h4>
+
+                                    <div className="space-y-4 flex-1">
+                                        <div className="bg-gray-900 rounded-xl p-4 border border-gray-700">
+                                            <div className="text-gray-400 text-xs font-bold uppercase mb-1">Impact Point</div>
+                                            <div className={`text-xl font-bold ${firstContact === 'BAT' ? 'text-emerald-400' : firstContact === 'PAD' ? 'text-red-400' : 'text-white'}`}>
+                                                {firstContact || '-'}
+                                            </div>
+                                        </div>
+
+                                        <div className="bg-gray-900 rounded-xl p-4 border border-gray-700">
+                                            <div className="text-gray-400 text-xs font-bold uppercase mb-1">LBW Decision</div>
+                                            <div className={`text-xl font-bold ${lbwDecision === 'OUT' ? 'text-red-400' : lbwDecision === 'NOT OUT' ? 'text-emerald-400' : 'text-white'}`}>
+                                                {lbwDecision || '-'}
+                                            </div>
+                                        </div>
+
+                                        <div className="bg-gray-900 rounded-xl p-4 border border-gray-700">
+                                            <div className="text-gray-400 text-xs font-bold uppercase mb-1">Detected Shot</div>
+                                            <div className="text-xl font-bold text-blue-400">
+                                                {shotType ? `${shotType.label} (${Math.round(shotType.conf * 100)}%)` : '-'}
+                                            </div>
+                                        </div>
+
+                                        <div className="bg-gray-900 rounded-xl p-4 border border-gray-700">
+                                            <div className="text-gray-400 text-xs font-bold uppercase mb-1">Tracking Mode</div>
+                                            <div className="text-lg font-bold text-emerald-500">Free Play</div>
+                                        </div>
+                                    </div>
+
+                                    <div className="mt-6">
+                                        <h4 className="text-white font-bold text-sm mb-3">Recent Detections</h4>
+                                        <div className="space-y-2">
+                                            {recentDetections.length > 0 ? (
+                                                recentDetections.map((det, idx) => (
+                                                    <div key={idx} className="bg-gray-900 rounded-lg p-2 text-xs text-gray-300 border border-gray-700">
+                                                        {det}
+                                                    </div>
+                                                ))
+                                            ) : (
+                                                <div className="text-gray-500 text-xs">Waiting for activity...</div>
+                                            )}
+                                        </div>
+                                    </div>
+                                </div>
+                            )}
+                        </div>
+                    </div>
+                </div>
+            )}
         </div>
     );
 }

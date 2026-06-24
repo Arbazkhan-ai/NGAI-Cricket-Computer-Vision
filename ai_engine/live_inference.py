@@ -15,7 +15,56 @@ from hawk_eye_engine import estimate_speed, swing_amount, spin_intensity, get_ba
 # Suppress warnings
 warnings.filterwarnings("ignore")
 
+import json
 import requests
+import threading
+import queue
+
+camera_lock = threading.Lock()
+frame_queue = queue.Queue(maxsize=300)
+stop_reader_thread = False
+reader_thread_obj = None
+
+def camera_reader_loop():
+    global camera, stop_reader_thread, frame_queue, connection_status
+    while not stop_reader_thread:
+        with camera_lock:
+            if camera is None or not camera.isOpened():
+                time.sleep(0.1)
+                continue
+            success, frame = camera.read()
+        
+        if success:
+            if frame_queue.full():
+                time.sleep(0.01)
+                continue
+            frame_queue.put(frame)
+        else:
+            with camera_lock:
+                connection_status = "Video Finished / Interrupted"
+                if camera:
+                    camera.release()
+                    camera = None
+            time.sleep(0.1)
+
+def start_camera_reader():
+    global stop_reader_thread, reader_thread_obj
+    stop_reader_thread = False
+    if reader_thread_obj is None or not reader_thread_obj.is_alive():
+        reader_thread_obj = threading.Thread(target=camera_reader_loop, daemon=True)
+        reader_thread_obj.start()
+
+def stop_camera_reader():
+    global stop_reader_thread, reader_thread_obj
+    stop_reader_thread = True
+    if reader_thread_obj is not None:
+        reader_thread_obj.join(timeout=1.0)
+        reader_thread_obj = None
+    while not frame_queue.empty():
+        try:
+            frame_queue.get_nowait()
+        except queue.Empty:
+            break
 
 def create_new_detection_sync(image_path="Live Stream"):
     try:
@@ -134,22 +183,28 @@ def connect_camera():
     ball_hit_bat = False
     current_db_id = None
     
-    if camera: camera.release()
+    stop_camera_reader()
+    with camera_lock:
+        if camera: camera.release()
     
-    video_source = ip if ip else 0
-    if isinstance(ip, str) and ip.startswith('/uploads/'):
+    video_source = ip
+    if str(ip).isdigit():
+        video_source = int(ip)
+    elif isinstance(ip, str) and (ip.startswith('/uploads/') or ip.startswith('uploads/')):
         video_source = os.path.join(os.path.dirname(BASE_DIR), 'shared', ip.lstrip('/'))
-    elif isinstance(ip, str) and ip.startswith('uploads/'):
-        video_source = os.path.join(os.path.dirname(BASE_DIR), 'shared', ip)
 
     print(f"Connecting to: {video_source}")
-    if video_source == 0 and os.name == 'nt':
-        camera = cv2.VideoCapture(video_source, cv2.CAP_DSHOW)
-    else:
-        camera = cv2.VideoCapture(video_source)
-    if camera.isOpened():
+    with camera_lock:
+        if camera: camera.release()
+        if video_source == 0 and os.name == 'nt':
+            camera = cv2.VideoCapture(video_source, cv2.CAP_DSHOW)
+        else:
+            camera = cv2.VideoCapture(video_source)
+            
+    if camera and camera.isOpened():
         connection_status = "Connected"
         current_ip = ip
+        start_camera_reader()
         return jsonify({"status": "success", "message": "Connected"})
     else:
         connection_status = "Connection Failed"
@@ -194,16 +249,20 @@ def generate_frames():
     last_shot_label = None
 
     while True:
-        current_frame_idx += 1
-        if camera is None or not camera.isOpened():
-            frame = np.zeros((480, 640, 3), dtype=np.uint8)
-            cv2.putText(frame, connection_status, (50, 240), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (255, 255, 255), 2)
-            time.sleep(0.1)
-        else:
-            ret, frame = camera.read()
-            if not ret:
-                connection_status = "Stream Interrupted"
-                camera.release(); camera = None; continue
+        try:
+            frame = frame_queue.get(timeout=0.1)
+            success = True
+        except queue.Empty:
+            success = False
+            with camera_lock:
+                if camera is None or not camera.isOpened():
+                    frame = np.zeros((480, 640, 3), dtype=np.uint8)
+                    cv2.putText(frame, connection_status, (50, 240), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (255, 255, 255), 2)
+                    ret, buffer = cv2.imencode('.jpg', frame)
+                    frame_bytes = buffer.tobytes()
+                    yield (b'--frame\r\n'
+                           b'Content-Type: image/jpeg\r\n\r\n' + frame_bytes + b'\r\n')
+            continue
 
             # Flip frame horizontally to fix mirroring (Left -> Right, Right -> Left)
             # frame = cv2.flip(frame, 1)
@@ -265,8 +324,15 @@ def generate_frames():
             if all_batsmen:
                 for bman in all_batsmen:
                     cx, cy = (bman[0]+bman[2])//2, (bman[1]+bman[3])//2
-                    # Add a generous margin so manual pitches don't exclude the batsman
-                    on_pitch = True if not pitch_boxes else any((px1-200) <= cx <= (px2+200) and (py1-200) <= cy <= (py2+200) for (px1, py1, px2, py2) in pitch_boxes)
+                    # Exact pitch filter logic matching process_video.py
+                    if manual_pitch_pts and len(manual_pitch_pts) == 4:
+                        import numpy as np
+                        import cv2
+                        pts = np.array(manual_pitch_pts, np.int32)
+                        on_pitch = cv2.pointPolygonTest(pts, (float(cx), float(cy)), False) >= 0
+                    else:
+                        on_pitch = True if not pitch_boxes else any(px1 <= cx <= px2 and py1 <= cy <= py2 for (px1, py1, px2, py2) in pitch_boxes)
+                    
                     if not on_pitch: continue
                     
                     has_bat = any((bman[0]-20) <= (bat[0]+bat[2])//2 <= (bman[2]+20) and (bman[1]-20) <= (bat[1]+bat[3])//2 <= (bman[3]+20) for bat in all_bats)

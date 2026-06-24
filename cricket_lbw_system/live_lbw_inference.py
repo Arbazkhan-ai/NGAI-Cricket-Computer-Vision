@@ -18,6 +18,56 @@ import joblib
 import json
 import requests
 import threading
+import queue
+
+camera_lock = threading.Lock()
+frame_queue = queue.Queue(maxsize=300)
+stop_reader_thread = False
+reader_thread_obj = None
+
+def camera_reader_loop():
+    global camera, stop_reader_thread, frame_queue, connection_status
+    while not stop_reader_thread:
+        with camera_lock:
+            if camera is None or not camera.isOpened():
+                time.sleep(0.1)
+                continue
+            success, frame = camera.read()
+        
+        if success:
+            # If queue is full, wait for it to clear slightly
+            if frame_queue.full():
+                time.sleep(0.01)
+                continue
+            frame_queue.put(frame)
+        else:
+            with camera_lock:
+                connection_status = "Video Finished / Interrupted"
+                if camera:
+                    camera.release()
+                    camera = None
+            time.sleep(0.1)
+
+def start_camera_reader():
+    global stop_reader_thread, reader_thread_obj
+    stop_reader_thread = False
+    if reader_thread_obj is None or not reader_thread_obj.is_alive():
+        reader_thread_obj = threading.Thread(target=camera_reader_loop, daemon=True)
+        reader_thread_obj.start()
+
+def stop_camera_reader():
+    global stop_reader_thread, reader_thread_obj
+    stop_reader_thread = True
+    if reader_thread_obj is not None:
+        reader_thread_obj.join(timeout=1.0)
+        reader_thread_obj = None
+        
+    # Clear queue
+    while not frame_queue.empty():
+        try:
+            frame_queue.get_nowait()
+        except queue.Empty:
+            break
 
 def create_new_detection_sync(image_path="Live LBW Stream"):
     try:
@@ -120,30 +170,36 @@ def connect_camera():
     lbw_decision_time = None
     current_display_decision = None
     
-    if camera: camera.release()
-    
+    stop_camera_reader()
+    with camera_lock:
+        if camera: camera.release()    
     current_ip = ip
     
-    video_source = ip if ip else 0
+    if isinstance(ip, str) and ip.isdigit():
+        ip = int(ip)
+    video_source = ip if ip != '' else 0
     if isinstance(ip, str) and ip.startswith('/uploads/'):
         video_source = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), 'shared', ip.lstrip('/'))
     elif isinstance(ip, str) and ip.startswith('uploads/'):
         video_source = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), 'shared', ip)
 
     print(f"Connecting to: {video_source}")
-    try:
-        os.environ["OPENCV_FFMPEG_CAPTURE_OPTIONS"] = "timeout;5000"
-        if video_source == 0 and os.name == 'nt':
-            camera = cv2.VideoCapture(video_source, cv2.CAP_DSHOW)
-        else:
-            camera = cv2.VideoCapture(video_source)
-    except Exception as e:
-        print(f"OpenCV Error opening camera: {e}")
-        camera = None
+    with camera_lock:
+        if camera: camera.release()
+        try:
+            os.environ["OPENCV_FFMPEG_CAPTURE_OPTIONS"] = "timeout;5000"
+            if video_source == 0 and os.name == 'nt':
+                camera = cv2.VideoCapture(video_source, cv2.CAP_DSHOW)
+            else:
+                camera = cv2.VideoCapture(video_source)
+        except Exception as e:
+            print(f"OpenCV Error opening camera: {e}")
+            camera = None
 
     if camera and camera.isOpened():
         connection_status = "Connected"
         current_ip = ip
+        start_camera_reader()
         return jsonify({"status": "success", "message": "Connected"})
     else:
         connection_status = "Connection Failed"
@@ -209,228 +265,230 @@ def generate_frames():
 
     while True:
         current_frame_idx += 1
-        if camera is None or not camera.isOpened():
-            frame = np.zeros((480, 640, 3), dtype=np.uint8)
-            cv2.putText(frame, connection_status, (50, 240), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (255, 255, 255), 2)
-            time.sleep(0.1)
-        else:
-            ret, frame = camera.read()
-            if not ret:
-                connection_status = "Video Finished / Interrupted"
-                camera.release(); camera = None; continue
+        try:
+            frame = frame_queue.get(timeout=0.1)
+            success = True
+        except queue.Empty:
+            success = False
+            with camera_lock:
+                if camera is None or not camera.isOpened():
+                    frame = np.zeros((480, 640, 3), dtype=np.uint8)
+                    cv2.putText(frame, connection_status, (50, 240), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (255, 255, 255), 2)
+                    ret, buffer = cv2.imencode('.jpg', frame)
+                    frame_bytes = buffer.tobytes()
+                    yield (b'--frame\r\n'
+                           b'Content-Type: image/jpeg\r\n\r\n' + frame_bytes + b'\r\n')
+            continue
+        
+        # Resize frame for LBW
+        frame = resize_frame(frame)
+        
+        # FPS Calculation
+        curr_time = time.time()
+        fps = 1 / (curr_time - prev_time) if (curr_time - prev_time) > 0 else 0
+        prev_time = curr_time
 
-            # Flip frame horizontally to fix mirroring
-            # frame = cv2.flip(frame, 1)
-
-            # Resize frame for LBW
-            frame = resize_frame(frame)
+        # 1. Detect Pitch (Auto) & Stumps (Auto)
+        if not manual_pitch_pts:
+            new_pitch_roi = detector.detect_pitch(frame)
+            if new_pitch_roi:
+                pitch_roi = new_pitch_roi
             
-            # FPS Calculation
-            curr_time = time.time()
-            fps = 1 / (curr_time - prev_time) if (curr_time - prev_time) > 0 else 0
-            prev_time = curr_time
+        new_stump_rect = detector.detect_stumps(frame)
+        if new_stump_rect:
+            stump_rect = new_stump_rect
 
-            # 1. Detect Pitch (Auto) & Stumps (Auto)
-            if not manual_pitch_pts:
-                new_pitch_roi = detector.detect_pitch(frame)
-                if new_pitch_roi:
-                    pitch_roi = new_pitch_roi
-                
-            new_stump_rect = detector.detect_stumps(frame)
-            if new_stump_rect:
-                stump_rect = new_stump_rect
+        # 2. Detect Objects
+        objects = detector.detect_objects(frame, pitch_roi=pitch_roi, manual_pitch=manual_pitch_pts)
+        ball_data = objects.get('ball')
+        batsman_data = objects.get('batsman')
+        bat_data = objects.get('bat')
+        
+        ball_center = ball_data['center'] if ball_data else None
 
-            # 2. Detect Objects
-            objects = detector.detect_objects(frame, pitch_roi=pitch_roi, manual_pitch=manual_pitch_pts)
-            ball_data = objects.get('ball')
-            batsman_data = objects.get('batsman')
-            bat_data = objects.get('bat')
+        # 3. Create Heat Zones
+        bat_zone = None
+        if bat_data:
+            btx1, bty1, btx2, bty2 = bat_data['bbox']
+            bat_zone = (btx1, bty1, btx2, bty2)
             
-            ball_center = ball_data['center'] if ball_data else None
-
-            # 3. Create Heat Zones
-            bat_zone = None
-            if bat_data:
-                btx1, bty1, btx2, bty2 = bat_data['bbox']
-                bat_zone = (btx1, bty1, btx2, bty2)
-                
-            pad_zone = None
-            pose_results, leg_positions, pose_offset = None, [], None
-            if batsman_data:
-                pose_results, leg_positions, pose_offset = pose_detector.detect_pose(frame, batsman_data['bbox'])
-                if leg_positions:
-                    lx = [p[0] for p in leg_positions]
-                    ly = [p[1] for p in leg_positions]
-                    pad_zone = (min(lx), min(ly), max(lx), max(ly))
-                else:
-                    bx1, by1, bx2, by2 = batsman_data['bbox']
-                    pad_zone = (bx1, int(by1 + (by2-by1)*0.5), bx2, by2)
-                    
-                # Shot Detection Logic
-                if pose_results and pose_results.pose_landmarks and shot_model:
-                    bx1, by1, bx2, by2 = pose_offset if pose_offset else (0, 0, frame.shape[1], frame.shape[0])
-                    cw, ch = bx2-bx1, by2-by1
-                    h_full, w_full = frame.shape[:2]
-                    feat = []
-                    for p in pose_results.pose_landmarks.landmark:
-                        abs_x = p.x * cw + bx1
-                        abs_y = p.y * ch + by1
-                        feat.extend([abs_x / w_full, abs_y / h_full, p.z, p.visibility])
-                        
-                    pose_buffer.append(feat)
-                    if len(pose_buffer) > SEQ_LEN: pose_buffer.pop(0)
-                    
-                    if len(pose_buffer) == SEQ_LEN:
-                        X = np.array(pose_buffer, dtype=np.float32)
-                        X_scaled = scaler.transform(X).reshape(1, SEQ_LEN, -1).astype(np.float32)
-                        ort_inputs = {shot_model.get_inputs()[0].name: X_scaled}
-                        preds = shot_model.run(None, ort_inputs)[0]
-                        idx = np.argmax(preds[0])
-                        if shot_classes[idx] not in IGNORE_LABELS and preds[0][idx] >= CONF_THRESHOLD:
-                            latched_shot_label = shot_classes[idx]
-                            latched_shot_conf = float(preds[0][idx])
-                            shot_delay_countdown = 150
-                            shot_display_countdown = 150
-                            
-                            session_log.append({
-                                "time": time.strftime("%I:%M:%S %p"),
-                                "type": "shot",
-                                "label": latched_shot_label,
-                                "conf": latched_shot_conf
-                            })
-                            pose_buffer = [] # Reset to avoid spam
-
-            # 4. Track Ball
-            if ball_center is not None:
-                last_pt = tracker.trajectory[-1] if tracker.trajectory else None
-                trajectory = tracker.update(ball_center)
-                new_last_pt = tracker.trajectory[-1] if tracker.trajectory else None
-                
-                if last_pt != new_last_pt or len(trajectory) == 1:
-                    frames_without_ball = 0
-                    if len(trajectory) == 1:
-                        current_db_id = create_new_detection_sync("Live LBW Stream")
-                        tracked_trajectory = []
-                        lbw_logic.reset()
-                        lbw_decision_time = None
-                        current_display_decision = None
-                else:
-                    frames_without_ball += 1
+        pad_zone = None
+        pose_results, leg_positions, pose_offset = None, [], None
+        if batsman_data:
+            pose_results, leg_positions, pose_offset = pose_detector.detect_pose(frame, batsman_data['bbox'])
+            if leg_positions:
+                lx = [p[0] for p in leg_positions]
+                ly = [p[1] for p in leg_positions]
+                pad_zone = (min(lx), min(ly), max(lx), max(ly))
             else:
-                frames_without_ball += 1
-                trajectory = tracker.update(ball_center)
+                bx1, by1, bx2, by2 = batsman_data['bbox']
+                pad_zone = (bx1, int(by1 + (by2-by1)*0.5), bx2, by2)
                 
-            if frames_without_ball > 15:
-                can_reset = True
+            # Shot Detection Logic
+            if pose_results and pose_results.pose_landmarks and shot_model:
+                bx1, by1, bx2, by2 = pose_offset if pose_offset else (0, 0, frame.shape[1], frame.shape[0])
+                cw, ch = bx2-bx1, by2-by1
+                h_full, w_full = frame.shape[:2]
+                feat = []
+                for p in pose_results.pose_landmarks.landmark:
+                    abs_x = p.x * cw + bx1
+                    abs_y = p.y * ch + by1
+                    feat.extend([abs_x / w_full, abs_y / h_full, p.z, p.visibility])
+                    
+                pose_buffer.append(feat)
+                if len(pose_buffer) > SEQ_LEN: pose_buffer.pop(0)
                 
-                if lbw_logic.decision in ["OUT", "NOT OUT", "NOT OUT (Missed Stumps)"]:
-                    if lbw_decision_time is not None and time.time() - lbw_decision_time < 5.0:
-                        can_reset = False
-                
-                if can_reset:
-                    tracker.clear()
+                if len(pose_buffer) == SEQ_LEN:
+                    X = np.array(pose_buffer, dtype=np.float32)
+                    X_scaled = scaler.transform(X).reshape(1, SEQ_LEN, -1).astype(np.float32)
+                    ort_inputs = {shot_model.get_inputs()[0].name: X_scaled}
+                    preds = shot_model.run(None, ort_inputs)[0]
+                    idx = np.argmax(preds[0])
+                    if shot_classes[idx] not in IGNORE_LABELS and preds[0][idx] >= CONF_THRESHOLD:
+                        latched_shot_label = shot_classes[idx]
+                        latched_shot_conf = float(preds[0][idx])
+                        shot_delay_countdown = 150
+                        shot_display_countdown = 150
+                        
+                        session_log.append({
+                            "time": time.strftime("%I:%M:%S %p"),
+                            "type": "shot",
+                            "label": latched_shot_label,
+                            "conf": latched_shot_conf
+                        })
+                        pose_buffer = [] # Reset to avoid spam
+
+        # 4. Track Ball
+        if ball_center is not None:
+            last_pt = tracker.trajectory[-1] if tracker.trajectory else None
+            trajectory = tracker.update(ball_center)
+            new_last_pt = tracker.trajectory[-1] if tracker.trajectory else None
+            
+            if last_pt != new_last_pt or len(trajectory) == 1:
+                frames_without_ball = 0
+                if len(trajectory) == 1:
+                    current_db_id = create_new_detection_sync("Live LBW Stream")
+                    tracked_trajectory = []
                     lbw_logic.reset()
                     lbw_decision_time = None
                     current_display_decision = None
-            
-            # 5. Check Collision & Impact
-            if lbw_logic.first_contact is None:
-                prev_contact = lbw_logic.first_contact
-                lbw_logic.check_collision(trajectory, bat_zone, pad_zone)
-                if lbw_logic.first_contact == "PAD" and prev_contact is None:
-                    pad_hit_time = time.time()
-
-            # 6. Predict Trajectory
-            predicted_path = []
-            if len(trajectory) > 5:
-                predicted_path = predictor.predict(trajectory)
-
-            # 7. Judge LBW
-            decision = lbw_logic.decision
-            is_delay_active = False
-            if lbw_logic.first_contact == "PAD":
-                if decision == "PENDING" or decision == "CHECK LBW" or decision == "":
-                    decision = lbw_logic.judge_lbw(predicted_path, stump_rect)
-                    if decision in ["OUT", "NOT OUT", "NOT OUT (Missed Stumps)"] and lbw_decision_time is None:
-                        lbw_decision_time = time.time()
-                current_display_decision = decision
             else:
-                if lbw_logic.first_contact and (decision == "PENDING" or decision == "CHECK LBW" or decision == ""):
-                    decision = lbw_logic.judge_lbw(predicted_path, stump_rect)
-                    if decision in ["OUT", "NOT OUT", "NOT OUT (Missed Stumps)"] and lbw_decision_time is None:
-                        lbw_decision_time = time.time()
-                current_display_decision = decision if lbw_logic.first_contact else None
+                frames_without_ball += 1
+        else:
+            frames_without_ball += 1
+            trajectory = tracker.update(ball_center)
             
-            # Log final decision once
-            if decision not in ["PENDING", "CHECK LBW", ""] and pad_hit_time is not None:
-                if last_logged_pad_hit_time != pad_hit_time:
-                    last_logged_pad_hit_time = pad_hit_time
-                    session_log.append({
-                        "time": time.strftime("%I:%M:%S %p"),
-                        "type": "lbw",
-                        "decision": decision
-                    })
-
-            # 8. Visualization
-            if pose_results and show_landmarks_flag:
-                pose_detector.draw_skeleton(frame, pose_results, offset=pose_offset)
-                
-            if current_display_decision is None:
-                if shot_delay_countdown > 0:
-                    shot_delay_countdown -= 1
-                elif shot_display_countdown > 0:
-                    shot_display_countdown -= 1
+        if frames_without_ball > 15:
+            can_reset = True
             
-            vis_impact_point = None if is_delay_active else lbw_logic.impact_point
-            vis_first_contact = None if is_delay_active else lbw_logic.first_contact
+            if lbw_logic.decision in ["OUT", "NOT OUT", "NOT OUT (Missed Stumps)"]:
+                if lbw_decision_time is not None and time.time() - lbw_decision_time < 5.0:
+                    can_reset = False
+            
+            if can_reset:
+                tracker.clear()
+                lbw_logic.reset()
+                lbw_decision_time = None
+                current_display_decision = None
+        
+        # 5. Check Collision & Impact
+        if lbw_logic.first_contact is None:
+            prev_contact = lbw_logic.first_contact
+            lbw_logic.check_collision(trajectory, bat_zone, pad_zone)
+            if lbw_logic.first_contact == "PAD" and prev_contact is None:
+                pad_hit_time = time.time()
 
-            annotated_frame = draw_analytics(
-                frame, 
-                ball_data, 
-                objects,
-                trajectory, 
-                predicted_path, 
-                vis_impact_point, 
-                decision, 
-                fps,
-                pitch_roi,
-                stump_rect,
-                manual_pitch_pts,
-                bat_zone=bat_zone,
-                pad_zone=pad_zone,
-                first_contact=vis_first_contact,
-                show_setup=False,
-                show_detections=show_landmarks_flag
-            )
+        # 6. Predict Trajectory
+        predicted_path = []
+        if len(trajectory) > 5:
+            predicted_path = predictor.predict(trajectory)
 
-            if decision and decision not in ["PENDING", "CHECK LBW", ""] and not is_delay_active:
-                if lbw_logic.impact_point:
-                    ix, iy = lbw_logic.impact_point
-                    cv2.circle(annotated_frame, (int(ix), int(iy)), 15, (0, 0, 255), 3)
-                    cv2.putText(annotated_frame, "IMPACT", (int(ix) - 30, int(iy) - 20), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 0, 255), 2)
+        # 7. Judge LBW
+        decision = lbw_logic.decision
+        is_delay_active = False
+        if lbw_logic.first_contact == "PAD":
+            if decision == "PENDING" or decision == "CHECK LBW" or decision == "":
+                decision = lbw_logic.judge_lbw(predicted_path, stump_rect)
+                if decision in ["OUT", "NOT OUT", "NOT OUT (Missed Stumps)"] and lbw_decision_time is None:
+                    lbw_decision_time = time.time()
+            current_display_decision = decision
+        else:
+            if lbw_logic.first_contact and (decision == "PENDING" or decision == "CHECK LBW" or decision == ""):
+                decision = lbw_logic.judge_lbw(predicted_path, stump_rect)
+                if decision in ["OUT", "NOT OUT", "NOT OUT (Missed Stumps)"] and lbw_decision_time is None:
+                    lbw_decision_time = time.time()
+            current_display_decision = decision if lbw_logic.first_contact else None
+        
+        # Log final decision once
+        if decision not in ["PENDING", "CHECK LBW", ""] and pad_hit_time is not None:
+            if last_logged_pad_hit_time != pad_hit_time:
+                last_logged_pad_hit_time = pad_hit_time
+                session_log.append({
+                    "time": time.strftime("%I:%M:%S %p"),
+                    "type": "lbw",
+                    "decision": decision
+                })
 
-            frame = annotated_frame
+        # 8. Visualization
+        if pose_results and show_landmarks_flag:
+            pose_detector.draw_skeleton(frame, pose_results, offset=pose_offset)
+            
+        if current_display_decision is None:
+            if shot_delay_countdown > 0:
+                shot_delay_countdown -= 1
+            elif shot_display_countdown > 0:
+                shot_display_countdown -= 1
+        
+        vis_impact_point = None if is_delay_active else lbw_logic.impact_point
+        vis_first_contact = None if is_delay_active else lbw_logic.first_contact
 
-            if len(trajectory) > 0:
-                tracked_trajectory = list(trajectory)
+        annotated_frame = draw_analytics(
+            frame, 
+            ball_data, 
+            objects,
+            trajectory, 
+            predicted_path, 
+            vis_impact_point, 
+            decision, 
+            fps,
+            pitch_roi,
+            stump_rect,
+            manual_pitch_pts,
+            bat_zone=bat_zone,
+            pad_zone=pad_zone,
+            first_contact=vis_first_contact,
+            show_setup=False,
+            show_detections=show_landmarks_flag
+        )
 
-            if current_db_id is not None:
-                shot_changed = (latched_shot_label != last_shot_label)
-                decision_changed = (decision != last_decision)
-                contact_changed = (lbw_logic.first_contact != last_contact)
-                if current_frame_idx % 3 == 0 or shot_changed or decision_changed or contact_changed:
-                    last_shot_label = latched_shot_label
-                    last_decision = decision
-                    last_contact = lbw_logic.first_contact
-                    results_data = [{
-                        "class_name": latched_shot_label if latched_shot_label else "Waiting...",
-                        "conf": latched_shot_conf if latched_shot_label else 0.0,
-                        "lbw_decision": decision if decision else "Waiting...",
-                        "first_contact": lbw_logic.first_contact if lbw_logic.first_contact else "None",
-                        "trajectory": tracked_trajectory,
-                        "type": "live_lbw"
-                    }]
-                    make_api_call_async("http://127.0.0.1:3000/api/detections/update", {"id": current_db_id, "results": results_data})
+        if decision and decision not in ["PENDING", "CHECK LBW", ""] and not is_delay_active:
+            if lbw_logic.impact_point:
+                ix, iy = lbw_logic.impact_point
+                cv2.circle(annotated_frame, (int(ix), int(iy)), 15, (0, 0, 255), 3)
+                cv2.putText(annotated_frame, "IMPACT", (int(ix) - 30, int(iy) - 20), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 0, 255), 2)
+
+        frame = annotated_frame
+
+        if len(trajectory) > 0:
+            tracked_trajectory = list(trajectory)
+
+        if current_db_id is not None:
+            shot_changed = (latched_shot_label != last_shot_label)
+            decision_changed = (decision != last_decision)
+            contact_changed = (lbw_logic.first_contact != last_contact)
+            if current_frame_idx % 3 == 0 or shot_changed or decision_changed or contact_changed:
+                last_shot_label = latched_shot_label
+                last_decision = decision
+                last_contact = lbw_logic.first_contact
+                results_data = [{
+                    "class_name": latched_shot_label if latched_shot_label else "Waiting...",
+                    "conf": latched_shot_conf if latched_shot_label else 0.0,
+                    "lbw_decision": decision if decision else "Waiting...",
+                    "first_contact": lbw_logic.first_contact if lbw_logic.first_contact else "None",
+                    "trajectory": tracked_trajectory,
+                    "type": "live_lbw"
+                }]
+                make_api_call_async("http://127.0.0.1:3000/api/detections/update", {"id": current_db_id, "results": results_data})
 
         ret, buffer = cv2.imencode('.jpg', frame)
         if not ret: continue
