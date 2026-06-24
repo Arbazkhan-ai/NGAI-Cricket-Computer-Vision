@@ -1,8 +1,4 @@
 # Large Model Weights
-ai_models/detect/train/weights/best_shot.pt
-ai_models/detect/train/weights/best.pt
-ai_models/detect/train/weights/last.pt
-ai_models/detect/train/weights/pitch.pt
 
 # Python Virtual Environment
 venv/
