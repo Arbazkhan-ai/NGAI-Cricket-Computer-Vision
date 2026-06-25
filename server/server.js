@@ -8,6 +8,7 @@ const fs = require('fs');
 const bcrypt = require('bcryptjs');
 const jwt = require('jsonwebtoken');
 const nodemailer = require('nodemailer');
+const http = require('http');
 
 const JWT_SECRET = 'super-secret-key-change-this';
 
@@ -91,62 +92,7 @@ let liveProcess = null; // Handle for the live detection window process
 let liveLbwProcess = null; // Handle for the LBW live detection process
 const requestQueue = []; // Array of {resolve, reject} objects corresponding to sent requests
 
-// Function to start the persistent Python process
-function startPythonProcess() {
-    const pythonScriptPath = path.join(__dirname, '..', 'ai_engine', 'inference.py');
-    console.log(`Starting Python inference service using: ${PYTHON_EXECUTABLE}`);
-
-    // Check if venv python exists, else fall back to 'python'
-    let exe = PYTHON_EXECUTABLE;
-    if (!fs.existsSync(exe)) {
-        console.warn(`Warning: Venv python not found at ${exe}. Falling back to system 'python'.`);
-        exe = 'python';
-    }
-
-    pythonProcess = spawn(exe, [pythonScriptPath]);
-
-    let buffer = '';
-
-    // Handle Data from Python (One JSON line per request)
-    pythonProcess.stdout.on('data', (data) => {
-        buffer += data.toString();
-
-        // Process line by line
-        let boundary = buffer.indexOf('\n');
-        while (boundary !== -1) {
-            const line = buffer.substring(0, boundary);
-            buffer = buffer.substring(boundary + 1);
-
-            if (line.trim()) {
-                const handler = requestQueue.shift();
-                if (handler) {
-                    try {
-                        const result = JSON.parse(line);
-                        handler.resolve(result);
-                    } catch (e) {
-                        console.error("JSON Parse Error on line:", line);
-                        handler.reject(new Error("Failed to parse backend response"));
-                    }
-                }
-            }
-            boundary = buffer.indexOf('\n');
-        }
-    });
-
-    pythonProcess.stderr.on('data', (data) => {
-        console.error(`PYTHON ERR: ${data}`);
-    });
-
-    pythonProcess.on('close', (code) => {
-        console.log(`Python process exited with code ${code}. Restarting in 1s...`);
-        pythonProcess = null;
-        setTimeout(startPythonProcess, 1000); // Auto-restart
-    });
-}
-
-// Start immediately
-startPythonProcess();
-
+// pythonProcess removed as it's replaced by FastAPI proxy
 
 // Endpoint to handle image upload and analysis
 app.post('/api/analyze', upload.single('image'), async (req, res) => {
@@ -157,38 +103,65 @@ app.post('/api/analyze', upload.single('image'), async (req, res) => {
     const imagePath = req.file.path;
     const mode = req.body.mode || 'yolo';
 
-    // Ensure process is running
-    if (!pythonProcess) {
-        // Wait a bit or try to restart? It should be auto-restarting.
-        return res.status(503).json({ error: 'Inference service is starting, please try again.' });
-    }
-
     try {
-        // Create a promise that resolves when the Python script responds
-        const result = await new Promise((resolve, reject) => {
-            // Add to queue
-            requestQueue.push({ resolve, reject });
+        const stats = fs.statSync(imagePath);
+        const boundary = '----WebKitFormBoundary' + Math.random().toString(16).substring(2);
+        const postDataStart = Buffer.from(
+            `--${boundary}\r\n` +
+            `Content-Disposition: form-data; name="file"; filename="${path.basename(imagePath)}"\r\n` +
+            `Content-Type: application/octet-stream\r\n\r\n`
+        );
+        const postDataEnd = Buffer.from(`\r\n--${boundary}--\r\n`);
 
-            // Send request to Python (JSON line)
-            const payload = JSON.stringify({ image_path: imagePath, mode: mode }) + '\n';
-            pythonProcess.stdin.write(payload);
+        const reqOpts = {
+            hostname: '127.0.0.1',
+            port: 8000,
+            path: '/predict',
+            method: 'POST',
+            headers: {
+                'Content-Type': `multipart/form-data; boundary=${boundary}`,
+                'Content-Length': postDataStart.length + stats.size + postDataEnd.length
+            }
+        };
+
+        const proxyReq = http.request(reqOpts, (proxyRes) => {
+            let data = '';
+            proxyRes.on('data', (chunk) => { data += chunk; });
+            proxyRes.on('end', () => {
+                if (proxyRes.statusCode === 200) {
+                    let result;
+                    try {
+                        result = JSON.parse(data).data;
+                    } catch (e) {
+                        return res.status(500).json({ error: 'Invalid response from AI engine' });
+                    }
+                    
+                    db.query("INSERT INTO detections (image_path, results) VALUES (?, ?)", [imagePath, JSON.stringify(result)], (err, dbResults) => {
+                        if (err) console.error("DB Error:", err.message);
+                    });
+
+                    res.json({
+                        message: 'Analysis complete',
+                        data: result,
+                        db_id: 0
+                    });
+                } else {
+                    res.status(500).json({ error: 'AI engine error' });
+                }
+            });
         });
 
-        // Error in result?
-        if (result.error) {
-            console.error("Inference Error:", result);
-            return res.status(500).json(result); // Pass error to frontend
-        }
-
-        // Save to Database (Async, don't block response)
-        db.query("INSERT INTO detections (image_path, results) VALUES (?, ?)", [imagePath, JSON.stringify(result)], (err, results) => {
-            if (err) console.error("DB Error:", err.message);
+        proxyReq.on('error', (e) => {
+            console.error("FastAPI Error:", e);
+            res.status(500).json({ error: 'Failed to process request', details: e.message });
         });
 
-        res.json({
-            message: 'Analysis complete',
-            data: result,
-            db_id: 0 // Placeholder or get actual ID if needed
+        proxyReq.write(postDataStart);
+        const fileStream = fs.createReadStream(imagePath);
+        fileStream.on('data', (chunk) => proxyReq.write(chunk));
+        fileStream.on('end', () => {
+            proxyReq.write(postDataEnd);
+            proxyReq.end();
         });
 
     } catch (e) {
@@ -212,47 +185,51 @@ app.post('/api/analyze-video', upload.single('video'), async (req, res) => {
 
     console.log(`Processing video: ${videoPath} with mode ${mode}`);
 
-    // Call process_video.py
-    const scriptPath = path.join(__dirname, '..', 'ai_engine', 'process_video.py');
-    const args = [scriptPath, '--input', videoPath, '--output', outputPath, '--mode', mode];
-
-    let exe = PYTHON_EXECUTABLE;
-    if (!fs.existsSync(exe)) {
-        exe = 'python';
-    }
-
     // Set headers for streaming progress
     res.setHeader('Content-Type', 'text/event-stream');
     res.setHeader('Cache-Control', 'no-cache');
     res.setHeader('Connection', 'keep-alive');
 
     let finalShotResult = null;
+    let stdoutBuffer = '';
 
-    const proc = spawn(exe, args);
+    const postData = `input_path=${encodeURIComponent(videoPath)}&output_path=${encodeURIComponent(outputPath)}&mode=${encodeURIComponent(mode)}`;
 
-    proc.stdout.on('data', (data) => {
-        const message = data.toString().trim();
-        console.log(`VIDEO OUT: ${message}`);
-        
-        // Check for the final result line
-        if (message.includes('FINAL_RESULT:')) {
-            const parts = message.split('FINAL_RESULT:')[1].trim().split('|');
-            if (parts.length >= 2) {
-                finalShotResult = {
-                    class_name: parts[0],
-                    conf: parseFloat(parts[1])
-                };
-            }
+    const options = {
+        hostname: '127.0.0.1',
+        port: 8000,
+        path: '/process-video',
+        method: 'POST',
+        headers: {
+            'Content-Type': 'application/x-www-form-urlencoded',
+            'Content-Length': Buffer.byteLength(postData)
         }
+    };
 
-        // Stream the message to the frontend
-        res.write(`data: ${JSON.stringify({ progress: message })}\n\n`);
-    });
+    const proxyReq = http.request(options, (proxyRes) => {
+        proxyRes.on('data', (chunk) => {
+            stdoutBuffer += chunk.toString();
+            
+            let newlineIndex;
+            while ((newlineIndex = stdoutBuffer.indexOf('\n\n')) !== -1) {
+                let messageStr = stdoutBuffer.substring(0, newlineIndex).trim();
+                stdoutBuffer = stdoutBuffer.substring(newlineIndex + 2);
+                
+                if (!messageStr || !messageStr.startsWith('data: ')) continue;
+                
+                // Directly pass the event stream chunk to frontend
+                res.write(`${messageStr}\n\n`);
 
-    proc.stderr.on('data', (data) => console.error(`VIDEO ERR: ${data}`));
+                try {
+                    const json = JSON.parse(messageStr.substring(6));
+                    if (json.final_result) {
+                        finalShotResult = json.final_result;
+                    }
+                } catch(e) {}
+            }
+        });
 
-    proc.on('close', (code) => {
-        if (code === 0) {
+        proxyRes.on('end', () => {
             const processedUrl = `/uploads/${filename}`;
             const resultsData = JSON.stringify(finalShotResult ? [finalShotResult] : [{ class_name: 'Analysis Complete', conf: 1.0, type: 'video' }]);
             
@@ -268,12 +245,17 @@ app.post('/api/analyze-video', upload.single('video'), async (req, res) => {
                 })}\n\n`);
                 res.end();
             });
-        } else {
-            console.error(`Video processing failed with code ${code}`);
-            res.write(`data: ${JSON.stringify({ error: 'Video processing failed' })}\n\n`);
-            res.end();
-        }
+        });
     });
+
+    proxyReq.on('error', (e) => {
+        console.error(`Problem with FastAPI request: ${e.message}`);
+        res.write(`data: ${JSON.stringify({ error: 'Video processing failed' })}\n\n`);
+        res.end();
+    });
+
+    proxyReq.write(postData);
+    proxyReq.end();
 });
 
 
@@ -292,64 +274,77 @@ app.post('/api/analyze-lbw-video', upload.single('video'), async (req, res) => {
 
     console.log(`Processing LBW video: ${videoPath}`);
 
-    // Call process_lbw_video.py
-    const scriptPath = path.join(__dirname, '..', 'cricket_lbw_system', 'process_lbw_video.py');
-    const args = [scriptPath, '--input', videoPath, '--output', outputPath, '--mode', mode];
-
-    let exe = PYTHON_EXECUTABLE;
-    if (!fs.existsSync(exe)) {
-        exe = 'python';
-    }
-
+    // Set headers for streaming progress
     res.setHeader('Content-Type', 'text/event-stream');
     res.setHeader('Cache-Control', 'no-cache');
     res.setHeader('Connection', 'keep-alive');
 
-    let finalShotResult = null;
+    let finalDecision = null;
+    let stdoutBuffer = '';
 
-    const proc = spawn(exe, args, { cwd: path.join(__dirname, '..', 'cricket_lbw_system') });
+    const postData = `input_path=${encodeURIComponent(videoPath)}&output_path=${encodeURIComponent(outputPath)}&mode=${encodeURIComponent(mode)}`;
 
-    proc.stdout.on('data', (data) => {
-        const message = data.toString().trim();
-        console.log(`LBW VIDEO OUT: ${message}`);
-        
-        if (message.includes('FINAL_RESULT:')) {
-            const parts = message.split('FINAL_RESULT:')[1].trim().split('|');
-            if (parts.length >= 2) {
-                finalShotResult = {
-                    class_name: parts[0],
-                    conf: parseFloat(parts[1])
-                };
-            }
+    const options = {
+        hostname: '127.0.0.1',
+        port: 8000,
+        path: '/process-lbw-video',
+        method: 'POST',
+        headers: {
+            'Content-Type': 'application/x-www-form-urlencoded',
+            'Content-Length': Buffer.byteLength(postData)
         }
+    };
 
-        res.write(`data: ${JSON.stringify({ progress: message })}\n\n`);
-    });
-
-    proc.stderr.on('data', (data) => console.error(`LBW VIDEO ERR: ${data}`));
-
-    proc.on('close', (code) => {
-        if (code === 0) {
-            const processedUrl = `/uploads/${filename}`;
-            const resultsData = JSON.stringify(finalShotResult ? [finalShotResult] : [{ class_name: 'Analysis Complete', conf: 1.0, type: 'video' }]);
+    const proxyReq = http.request(options, (proxyRes) => {
+        proxyRes.on('data', (chunk) => {
+            stdoutBuffer += chunk.toString();
             
-            db.query("INSERT INTO detections (image_path, results) VALUES (?, ?)", [processedUrl, resultsData], (err, results) => {
+            let newlineIndex;
+            while ((newlineIndex = stdoutBuffer.indexOf('\n\n')) !== -1) {
+                let messageStr = stdoutBuffer.substring(0, newlineIndex).trim();
+                stdoutBuffer = stdoutBuffer.substring(newlineIndex + 2);
+                
+                if (!messageStr || !messageStr.startsWith('data: ')) continue;
+                
+                // Directly pass the event stream chunk to frontend
+                res.write(`${messageStr}\n\n`);
+
+                try {
+                    const json = JSON.parse(messageStr.substring(6));
+                    if (json.final_result) {
+                        finalDecision = json.final_result;
+                    }
+                } catch(e) {}
+            }
+        });
+
+        proxyRes.on('end', () => {
+            const processedUrl = `/uploads/${filename}`;
+            const resultsData = JSON.stringify(finalDecision ? [finalDecision] : [{ decision: 'NOT OUT', conf: 1.0, type: 'lbw' }]);
+            
+            db.query("INSERT INTO lbw_detections (video_path, results) VALUES (?, ?)", [processedUrl, resultsData], (err, results) => {
                 if (err) console.error("DB Error (LBW Video):", err.message);
                 
+                // Final success message with video URL and detection data
                 res.write(`data: ${JSON.stringify({ 
-                    message: 'Video processing complete', 
+                    message: 'LBW Video processing complete', 
                     video_url: processedUrl, 
-                    data: finalShotResult ? [finalShotResult] : null,
+                    data: finalDecision ? [finalDecision] : null,
                     db_id: results ? results.insertId : 0 
                 })}\n\n`);
                 res.end();
             });
-        } else {
-            console.error(`LBW Video processing failed with code ${code}`);
-            res.write(`data: ${JSON.stringify({ error: 'Video processing failed' })}\n\n`);
-            res.end();
-        }
+        });
     });
+
+    proxyReq.on('error', (e) => {
+        console.error(`Problem with FastAPI LBW request: ${e.message}`);
+        res.write(`data: ${JSON.stringify({ error: 'Video processing failed' })}\n\n`);
+        res.end();
+    });
+
+    proxyReq.write(postData);
+    proxyReq.end();
 });
 
 // Endpoint just to upload a video and save to history unanalyzed
@@ -556,7 +551,7 @@ function startLiveLbwService() {
 }
 
 // Start both persistent services
-startPythonProcess();
+// startPythonProcess(); removed
 startLiveService();
 startLiveLbwService();
 

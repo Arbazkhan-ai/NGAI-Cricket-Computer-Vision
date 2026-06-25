@@ -2,9 +2,9 @@ import mediapipe as mp
 import cv2
 
 class BatsmanPoseDetector:
-    def __init__(self):
+    def __init__(self, pose_instance=None):
         self.mp_pose = mp.solutions.pose
-        self.pose = self.mp_pose.Pose(static_image_mode=False, min_detection_confidence=0.5)
+        self.pose = pose_instance if pose_instance else self.mp_pose.Pose(static_image_mode=False, min_detection_confidence=0.5)
         self.mp_draw = mp.solutions.drawing_utils
         
     def detect_pose(self, frame, person_bbox=None):

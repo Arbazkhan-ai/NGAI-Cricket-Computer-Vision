@@ -33,7 +33,7 @@ export const analyzeImage = async (file: File, mode: 'mediapipe' | 'yolo' = 'med
     return response.json();
 };
 
-export const analyzeVideo = async (file: File, mode: string = 'mediapipe', onProgress?: (msg: string) => void): Promise<any> => {
+export const analyzeVideo = async (file: File, mode: string = 'mediapipe', onProgress?: (msg: string, frameData?: string) => void): Promise<any> => {
     const formData = new FormData();
     formData.append('video', file);
     formData.append('mode', mode);
@@ -62,6 +62,9 @@ export const analyzeVideo = async (file: File, mode: string = 'mediapipe', onPro
                     const data = JSON.parse(line.slice(6));
                     if (data.progress && onProgress) {
                         onProgress(data.progress);
+                    }
+                    if (data.frame && onProgress) {
+                        onProgress('', data.frame);
                     }
                     if (data.video_url) {
                         finalResult = data;
@@ -102,20 +105,27 @@ export const analyzeExistingVideo = async (id: number, type: 'shot' | 'lbw', sou
     const reader = response.body?.getReader();
     const decoder = new TextDecoder();
     let finalResult = null;
+    let buffer = '';
 
     while (reader) {
         const { value, done } = await reader.read();
         if (done) break;
 
-        const chunk = decoder.decode(value);
-        const lines = chunk.split('\n');
+        buffer += decoder.decode(value, { stream: true });
+        
+        let newlineIndex;
+        while ((newlineIndex = buffer.indexOf('\n')) !== -1) {
+            const line = buffer.slice(0, newlineIndex).trim();
+            buffer = buffer.slice(newlineIndex + 1);
 
-        for (const line of lines) {
             if (line.startsWith('data: ')) {
                 try {
                     const data = JSON.parse(line.slice(6));
                     if (data.progress && onProgress) {
                         onProgress(data.progress);
+                    }
+                    if (data.frame && onProgress) {
+                        onProgress('', data.frame);
                     }
                     if (data.video_url) {
                         finalResult = data;
@@ -133,7 +143,7 @@ export const analyzeExistingVideo = async (id: number, type: 'shot' | 'lbw', sou
     return finalResult;
 };
 
-export const analyzeLbwVideo = async (file: File, mode: string = 'auto', onProgress?: (msg: string) => void): Promise<any> => {
+export const analyzeLbwVideo = async (file: File, mode: string = 'auto', onProgress?: (msg: string, frameData?: string) => void): Promise<any> => {
     const formData = new FormData();
     formData.append('video', file);
     formData.append('mode', mode);
@@ -148,20 +158,27 @@ export const analyzeLbwVideo = async (file: File, mode: string = 'auto', onProgr
     const reader = response.body?.getReader();
     const decoder = new TextDecoder();
     let finalResult = null;
+    let buffer = '';
 
     while (reader) {
         const { value, done } = await reader.read();
         if (done) break;
 
-        const chunk = decoder.decode(value);
-        const lines = chunk.split('\n');
+        buffer += decoder.decode(value, { stream: true });
+        
+        let newlineIndex;
+        while ((newlineIndex = buffer.indexOf('\n')) !== -1) {
+            const line = buffer.slice(0, newlineIndex).trim();
+            buffer = buffer.slice(newlineIndex + 1);
 
-        for (const line of lines) {
             if (line.startsWith('data: ')) {
                 try {
                     const data = JSON.parse(line.slice(6));
                     if (data.progress && onProgress) {
                         onProgress(data.progress);
+                    }
+                    if (data.frame && onProgress) {
+                        onProgress('', data.frame);
                     }
                     if (data.video_url) {
                         finalResult = data;

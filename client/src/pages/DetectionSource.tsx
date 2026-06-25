@@ -1,7 +1,7 @@
 import { Camera, Video, Image as ImageIcon, Smartphone, MonitorPlay, UploadCloud, Loader2, Zap } from 'lucide-react';
 import { useState, useRef, useEffect } from 'react';
 import { useNavigate, useLocation } from 'react-router-dom';
-import { analyzeImage, uploadVideoOnly, type DetectionResult } from '../services/api';
+import { analyzeImage, analyzeVideo, analyzeLbwVideo, type DetectionResult } from '../services/api';
 
 export default function DetectionSource() {
     const navigate = useNavigate();
@@ -13,6 +13,7 @@ export default function DetectionSource() {
     const [isAnalyzing, setIsAnalyzing] = useState(false);
     const [analysisResult, setAnalysisResult] = useState<any[] | null>(null);
     const [previewUrl, setPreviewUrl] = useState<string | null>(null);
+    const [liveStreamUrl, setLiveStreamUrl] = useState<string | null>(null);
 
     const [isPitchSetup, setIsPitchSetup] = useState(false);
     const [manualPitchPts, setManualPitchPts] = useState<{x: number, y: number}[]>([]);
@@ -20,6 +21,9 @@ export default function DetectionSource() {
     const [ipAddress, setIpAddress] = useState('');
     const [port, setPort] = useState('');
     const [showLandmarks, setShowLandmarks] = useState(false);
+
+    const [devices, setDevices] = useState<MediaDeviceInfo[]>([]);
+    const [selectedDeviceId, setSelectedDeviceId] = useState<string>('');
 
     const fileInputRef = useRef<HTMLInputElement>(null);
     const imageRef = useRef<HTMLImageElement>(null);
@@ -203,26 +207,34 @@ export default function DetectionSource() {
         if (!file) return;
 
         setIsAnalyzing(true);
-        setAnalysisProgress('Uploading video...');
+        setIsPitchSetup(false);
+        setAnalysisProgress('Uploading and Processing Video...');
         try {
-            const uploadRes = await uploadVideoOnly(file);
-            const videoPath = uploadRes.video_path;
-            const ptsArray = isAuto ? undefined : manualPitchPts.map(p => [Math.round(p.x), Math.round(p.y)]);
+            const ptsString = isAuto ? 'auto' : JSON.stringify(manualPitchPts.map(p => [Math.round(p.x), Math.round(p.y)]));
+            const apiMethod = analysisType === 'shot' ? analyzeVideo : analyzeLbwVideo;
             
-            navigate('/live', {
-                state: {
-                    ipAddress: videoPath,
-                    port: '',
-                    showLandmarks: showLandmarks,
-                    analysisType: analysisType,
-                    manualPitch: ptsArray
+            const res = await apiMethod(file, ptsString, (msg, frameData) => {
+                if (frameData) {
+                    setLiveStreamUrl(`data:image/jpeg;base64,${frameData}`);
+                } else if (msg) {
+                    setAnalysisProgress(msg);
                 }
             });
+            
+            if (res && res.video_url) {
+                setLiveStreamUrl(null); // Clear live stream to show final video
+                setPreviewUrl(`http://localhost:3000${res.video_url}`);
+                if (res.data) {
+                    setAnalysisResult(res.data.map(mapDetection));
+                }
+            }
         } catch (e) {
             console.error(e);
-            alert('Connection failed');
+            alert('Analysis failed');
+        } finally {
             setIsAnalyzing(false);
             setAnalysisProgress('');
+            setIsPitchSetup(false);
         }
     };
 
@@ -234,6 +246,7 @@ export default function DetectionSource() {
 
         setAnalysisResult(null);
         setPreviewUrl(null);
+        setLiveStreamUrl(null);
         setIsPitchSetup(false);
         setManualPitchPts([]);
         const url = URL.createObjectURL(file);
@@ -271,7 +284,6 @@ export default function DetectionSource() {
     
 
 
-    // Effect to draw on Image when result changes
     useEffect(() => {
         if (selectedMethod === 'image' && analysisResult && imageRef.current && overlayRef.current) {
             const ctx = overlayRef.current.getContext('2d');
@@ -282,6 +294,23 @@ export default function DetectionSource() {
             }
         }
     }, [analysisResult, selectedMethod]);
+
+    useEffect(() => {
+        if (selectedMethod === 'live') {
+            navigator.mediaDevices.getUserMedia({ video: true }).then(() => {
+                navigator.mediaDevices.enumerateDevices().then(deviceInfos => {
+                    const videoDevices = deviceInfos.filter(d => d.kind === 'videoinput');
+                    setDevices(videoDevices);
+                    if (videoDevices.length > 0 && !selectedDeviceId) {
+                        setSelectedDeviceId(videoDevices[0].deviceId);
+                        if (!useCustomUrl) {
+                            setIpAddress("0");
+                        }
+                    }
+                });
+            }).catch(err => console.error("Camera access denied", err));
+        }
+    }, [selectedMethod]);
 
     useEffect(() => {
         if (isPitchSetup && overlayRef.current && videoRef.current) {
@@ -342,6 +371,7 @@ export default function DetectionSource() {
     const handleAnalysisTypeChange = (type: 'shot' | 'lbw') => {
         setAnalysisType(type);
         setPreviewUrl(null);
+        setLiveStreamUrl(null);
         setAnalysisResult(null);
         setIsPitchSetup(false);
         setManualPitchPts([]);
@@ -484,8 +514,28 @@ export default function DetectionSource() {
                             </div>
                         ) : (
                             <div className="grid grid-cols-1 md:grid-cols-2 gap-6 mb-8 max-w-2xl mx-auto">
+                                <div className="flex flex-col gap-2 md:col-span-2">
+                                    <label className="text-sm font-semibold text-gray-700">Select Webcam</label>
+                                    <select
+                                        value={selectedDeviceId}
+                                        onChange={(e) => {
+                                            setSelectedDeviceId(e.target.value);
+                                            const index = devices.findIndex(d => d.deviceId === e.target.value);
+                                            if (index !== -1) {
+                                                setIpAddress(index.toString());
+                                            }
+                                        }}
+                                        className="border border-emerald-200 rounded-xl p-3 focus:outline-none focus:ring-2 focus:ring-emerald-500 bg-white"
+                                    >
+                                        {devices.map((device, idx) => (
+                                            <option key={device.deviceId} value={device.deviceId}>
+                                                {device.label || `Camera ${idx + 1}`}
+                                            </option>
+                                        ))}
+                                    </select>
+                                </div>
                                 <div className="flex flex-col gap-2">
-                                    <label className="text-sm font-semibold text-gray-700">IP Address (Optional)</label>
+                                    <label className="text-sm font-semibold text-gray-700">IP Address (Optional overrides webcam)</label>
                                     <input
                                         type="text"
                                         placeholder="192.168.1.x"
@@ -556,15 +606,21 @@ export default function DetectionSource() {
                             />
 
                             {/* Preview Area */}
-                            {previewUrl && (
+                            {(previewUrl || liveStreamUrl) && (
                                 <div className="relative w-full max-w-2xl mx-auto mb-8">
-                                    <div className="relative rounded-2xl overflow-hidden border-4 border-white shadow-2xl">
-                                        {selectedMethod === 'image' ? (
+                                    <div className="relative rounded-2xl overflow-hidden border-4 border-white shadow-2xl bg-black">
+                                        {liveStreamUrl ? (
+                                            <img
+                                                src={liveStreamUrl}
+                                                alt="Live Processing"
+                                                className="max-h-[60vh] w-full object-contain mx-auto rounded-lg shadow-md block"
+                                            />
+                                        ) : selectedMethod === 'image' ? (
                                             <img
                                                 ref={imageRef}
-                                                src={previewUrl}
+                                                src={previewUrl!}
                                                 alt="Preview"
-                                                className="max-h-[60vh] rounded-lg shadow-md block"
+                                                className="max-h-[60vh] rounded-lg shadow-md block w-full"
                                                 onLoad={() => {
                                                     if (analysisResult && overlayRef.current && imageRef.current) {
                                                         const ctx = overlayRef.current.getContext('2d');
@@ -575,17 +631,22 @@ export default function DetectionSource() {
                                         ) : (
                                             <video
                                                 ref={videoRef}
-                                                src={previewUrl}
+                                                src={previewUrl!}
                                                 controls
-                                                className="max-h-[60vh] rounded-lg shadow-md block"
+                                                loop
+                                                autoPlay
+                                                playsInline
+                                                className="max-h-[60vh] rounded-lg shadow-md block w-full"
                                                 onPlay={() => processVideoFrame()}
                                             />
                                         )}
-                                        <canvas
-                                            ref={overlayRef}
-                                            onClick={handleOverlayClick}
-                                            className={`absolute inset-0 w-full h-full ${isPitchSetup ? 'z-10 pointer-events-auto cursor-crosshair' : 'pointer-events-none'}`}
-                                        />
+                                        {!liveStreamUrl && (
+                                            <canvas
+                                                ref={overlayRef}
+                                                onClick={handleOverlayClick}
+                                                className={`absolute inset-0 w-full h-full ${isPitchSetup ? 'z-10 pointer-events-auto cursor-crosshair' : 'pointer-events-none'}`}
+                                            />
+                                        )}
                                         <canvas ref={canvasRef} className="hidden" />
                                     </div>
                                 </div>
@@ -632,23 +693,14 @@ export default function DetectionSource() {
                             )}
 
                             {/* Loading / Empty State */}
-                            {isAnalyzing ? (
+                            {isAnalyzing && selectedMethod !== 'video' ? (
                                 <div className="flex flex-col items-center text-emerald-600 w-full px-8">
                                     <Loader2 className="w-12 h-12 animate-spin mb-4" />
                                     <h3 className="text-xl font-bold">Processing...</h3>
                                     <p className="text-sm opacity-70 mb-6">Running AI Models...</p>
-                                    
-                                    {selectedMethod === 'video' && analysisProgress && (
-                                        <div className="w-full bg-emerald-100 rounded-full h-12 flex items-center justify-center relative overflow-hidden border border-emerald-200 shadow-inner">
-                                            <div className="absolute inset-0 bg-emerald-500/10 animate-pulse" />
-                                            <span className="relative z-10 font-mono text-emerald-800 font-bold">
-                                                {analysisProgress}
-                                            </span>
-                                        </div>
-                                    )}
                                 </div>
                             ) : (
-                                !previewUrl && (
+                                !previewUrl && !liveStreamUrl && !isAnalyzing && (
                                     <div className="text-center">
                                         <div className="bg-emerald-100 p-4 rounded-full mb-4 w-fit mx-auto group-hover:scale-110 transition-transform">
                                             <UploadCloud className="w-8 h-8 text-emerald-600" />
@@ -669,20 +721,23 @@ export default function DetectionSource() {
                                 )
                             )}
 
-                            {previewUrl && !isAnalyzing && !isPitchSetup && (
+                            {(previewUrl || liveStreamUrl) && !isAnalyzing && !isPitchSetup && (
                                 <div className="flex flex-col items-center gap-4 w-full">
-                                    <button
-                                        onClick={startAnalysis}
-                                        className="bg-emerald-600 text-white px-12 py-4 rounded-2xl font-black text-lg shadow-xl shadow-emerald-100 hover:scale-105 active:scale-95 transition-all flex items-center gap-3"
-                                    >
-                                        <Zap className="w-6 h-6 fill-white" />
-                                        <span>START AI ANALYSIS</span>
-                                    </button>
+                                    {!liveStreamUrl && (
+                                        <button
+                                            onClick={startAnalysis}
+                                            className="bg-emerald-600 text-white px-12 py-4 rounded-2xl font-black text-lg shadow-xl shadow-emerald-100 hover:scale-105 active:scale-95 transition-all flex items-center gap-3"
+                                        >
+                                            <Zap className="w-6 h-6 fill-white" />
+                                            <span>START AI ANALYSIS</span>
+                                        </button>
+                                    )}
                                     
                                     <button
                                         onClick={(e) => { 
                                             e.stopPropagation(); 
                                             setPreviewUrl(null); 
+                                            setLiveStreamUrl(null);
                                             setAnalysisResult(null);
                                             if (fileInputRef.current) fileInputRef.current.value = ''; // Reset memory
                                         }}
@@ -699,7 +754,7 @@ export default function DetectionSource() {
                             <div className="mt-8 w-full max-w-2xl bg-white p-6 rounded-2xl border border-emerald-100 shadow-sm text-center">
                                 <h3 className="font-bold text-emerald-800 mb-2 uppercase text-xs tracking-widest">Analysis Result</h3>
                                 <div className="text-3xl font-black text-gray-900">
-                                    {analysisResult[0].class_name || 'Unknown'}
+                                    {analysisResult[0].class_name || analysisResult[0].decision || 'Unknown'}
                                 </div>
                                 <div className="text-sm text-emerald-600 font-bold mt-1">
                                     {(analysisResult[0].conf * 100).toFixed(0)}% Confidence

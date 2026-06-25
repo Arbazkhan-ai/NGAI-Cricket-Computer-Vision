@@ -9,10 +9,11 @@ class Detector:
     def __init__(self, 
                  ball_model_path=os.path.join(BASE_DIR, 'models', 'ball_model.pt'), 
                  pitch_model_path=os.path.join(BASE_DIR, 'models', 'pitch.pt'), 
-                 stump_model_path=os.path.join(BASE_DIR, 'runs', 'detect', 'train', 'weights', 'best.pt')):
-        self.ball_model = YOLO(ball_model_path)
-        self.pitch_model = YOLO(pitch_model_path)
-        self.stump_model = YOLO(stump_model_path)
+                 stump_model_path=os.path.join(BASE_DIR, 'runs', 'detect', 'train', 'weights', 'best.pt'),
+                 ball_model=None, pitch_model=None, stump_model=None):
+        self.ball_model = ball_model if ball_model else YOLO(ball_model_path)
+        self.pitch_model = pitch_model if pitch_model else YOLO(pitch_model_path)
+        self.stump_model = stump_model if stump_model else YOLO(stump_model_path)
         
     def detect_pitch(self, frame):
         results = self.pitch_model(frame, verbose=False, conf=0.5)[0]

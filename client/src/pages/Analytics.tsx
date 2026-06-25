@@ -53,7 +53,7 @@ const processData = (history: any[], matches: any[]) => {
         if (detections.length > 0) {
             // Count first detection
             const det = detections[0];
-            const n = det.class_name || ID_TO_NAME[det.class_id] || 'Unknown';
+            const n = det.class_name || det.decision || ID_TO_NAME[det.class_id] || 'Unknown';
             if (counts[n] !== undefined) counts[n]++;
             else counts[n] = (counts[n] || 0) + 1;
 

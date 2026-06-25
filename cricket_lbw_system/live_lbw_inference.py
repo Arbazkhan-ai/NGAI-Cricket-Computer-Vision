@@ -24,6 +24,7 @@ camera_lock = threading.Lock()
 frame_queue = queue.Queue(maxsize=300)
 stop_reader_thread = False
 reader_thread_obj = None
+video_writer = None
 
 
 class HTTPMJPEGStream:
@@ -83,7 +84,7 @@ class HTTPMJPEGStream:
         return 0
 
 def camera_reader_loop():
-    global camera, stop_reader_thread, frame_queue, connection_status
+    global camera, stop_reader_thread, frame_queue, connection_status, video_writer
     while not stop_reader_thread:
         with camera_lock:
             if camera is None or not camera.isOpened():
@@ -92,6 +93,11 @@ def camera_reader_loop():
             success, frame = camera.read()
         
         if success:
+            if video_writer is not None:
+                try:
+                    video_writer.write(frame)
+                except Exception as e:
+                    print(f"Error writing to video: {e}")
             # If queue is full, wait for it to clear slightly
             if frame_queue.full():
                 time.sleep(0.01)
@@ -103,6 +109,9 @@ def camera_reader_loop():
                 if camera:
                     camera.release()
                     camera = None
+                if video_writer:
+                    video_writer.release()
+                    video_writer = None
             time.sleep(0.1)
 
 def start_camera_reader():
@@ -286,7 +295,9 @@ def connect_camera():
     
     stop_camera_reader()
     with camera_lock:
-        if camera: camera.release()    
+        if camera: camera.release()
+        global video_writer
+        if video_writer: video_writer.release(); video_writer = None
     current_ip = ip
     
     if isinstance(ip, str) and ip.isdigit():
@@ -313,6 +324,20 @@ def connect_camera():
     if camera and camera.isOpened():
         connection_status = "Connected"
         current_ip = ip
+        
+        success, frame = camera.read()
+        if success:
+            h, w = frame.shape[:2]
+            fps = 30.0
+            timestamp = time.strftime("%Y%m%d_%H%M%S")
+            upload_dir = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), 'shared', 'uploads')
+            os.makedirs(upload_dir, exist_ok=True)
+            save_path = os.path.join(upload_dir, f"live_lbw_recording_{timestamp}.mp4")
+            fourcc = cv2.VideoWriter_fourcc(*'mp4v')
+            video_writer = cv2.VideoWriter(save_path, fourcc, fps, (w, h))
+            if not frame_queue.full():
+                frame_queue.put(frame)
+                
         start_camera_reader()
         return jsonify({"status": "success", "message": "Connected"})
     else:
@@ -414,11 +439,17 @@ def generate_frames():
                 if new_stump_rect:
                     stump_rect = new_stump_rect
 
-        # 2. Detect Objects
-        objects = detector.detect_objects(frame, pitch_roi=pitch_roi, manual_pitch=manual_pitch_pts)
-        ball_data = objects.get('ball')
-        batsman_data = objects.get('batsman')
-        bat_data = objects.get('bat')
+        # 2. Detect Objects (Strict Pitch Enforcement)
+        if not pitch_roi and not manual_pitch_pts:
+            objects = {}
+            ball_data = None
+            batsman_data = None
+            bat_data = None
+        else:
+            objects = detector.detect_objects(frame, pitch_roi=pitch_roi, manual_pitch=manual_pitch_pts)
+            ball_data = objects.get('ball')
+            batsman_data = objects.get('batsman')
+            bat_data = objects.get('bat')
         
         ball_center = ball_data['center'] if ball_data else None
 
@@ -612,10 +643,13 @@ def generate_frames():
 
 @app.route('/api/disconnect', methods=['POST'])
 def disconnect_camera():
-    global camera, connection_status
+    global camera, connection_status, video_writer
     if camera:
         camera.release()
         camera = None
+    if video_writer:
+        video_writer.release()
+        video_writer = None
     connection_status = "Disconnected"
     return jsonify({"status": "success", "message": "Camera disconnected"})
 

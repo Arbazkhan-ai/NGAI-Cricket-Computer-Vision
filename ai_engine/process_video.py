@@ -44,37 +44,55 @@ def draw_trail(frame, track):
         cv2.circle(frame, pt, r, (0, 255, 255), -1)
     return frame
 
-def process_video(input_path, output_path, mode="mediapipe"):
-    print(f"Starting advanced processing (Instant-Mode): {input_path}", flush=True)
+def process_video(input_path, output_path, mode="mediapipe", models_dict=None):
+    import json
+    yield f"data: {json.dumps({'progress': f'Starting analysis: {input_path} with mode {mode}'})}\n\n"
+    
+    manual_pitch_pts = []
+    if mode.startswith('[') and mode.endswith(']'):
+        try:
+            manual_pitch_pts = json.loads(mode)
+        except:
+            pass
+            
     cap = cv2.VideoCapture(input_path)
-    if not cap.isOpened(): return False
-
+    if not cap.isOpened():
+        yield f"data: {json.dumps({'error': 'Could not open video source'})}\n\n"
+        return
+        
     width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
     height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
     fps = int(cap.get(cv2.CAP_PROP_FPS)) or 30
     
-    # Load Models
-    try:
-        import onnxruntime as ort
-        import joblib
-        import json
-        
-        print(f"Loading Ball Model from: {YOLO_BALL_PATH}", flush=True)
-        ball_model = YOLO(YOLO_BALL_PATH, task='detect')
-        print(f"Loading Pitch Model from: {YOLO_PITCH_PATH}", flush=True)
-        pitch_model = YOLO(YOLO_PITCH_PATH, task='detect')
-        shot_model = ort.InferenceSession(SHOT_MODEL_PATH)
-        scaler = joblib.load(SCALER_PATH)
-        with open(LABEL_MAP_PATH, "r") as f:
-            classes = json.load(f)["classes"]
+    # Load Models or use provided
+    if models_dict:
+        ball_model = models_dict.get('ball_model')
+        pitch_model = models_dict.get('pitch_model')
+        shot_model = models_dict.get('shot_model')
+        scaler = models_dict.get('scaler')
+        classes = models_dict.get('classes')
+        pose = models_dict.get('pose_detector')
+    else:
+        try:
+            import onnxruntime as ort
+            import joblib
             
-        mp_pose = mp.solutions.pose
-        pose = mp_pose.Pose(static_image_mode=False, min_detection_confidence=0.5, min_tracking_confidence=0.5, model_complexity=2)
-    except Exception as e:
-        import traceback
-        print(f"Init Error: {e}", flush=True)
-        traceback.print_exc()
-        return False
+            yield f"data: {json.dumps({'progress': 'Loading Models...'})}\n\n"
+            ball_model = YOLO(YOLO_BALL_PATH, task='detect')
+            pitch_model = YOLO(YOLO_PITCH_PATH, task='detect')
+            shot_model = ort.InferenceSession(SHOT_MODEL_PATH)
+            scaler = joblib.load(SCALER_PATH)
+            with open(LABEL_MAP_PATH, "r") as f:
+                classes = json.load(f)["classes"]
+                
+            mp_pose = mp.solutions.pose
+            pose = mp_pose.Pose(static_image_mode=False, min_detection_confidence=0.5, min_tracking_confidence=0.5, model_complexity=2)
+        except Exception as e:
+            import traceback
+            err_msg = str(e)
+            traceback.print_exc()
+            yield f"data: {json.dumps({'error': f'Init Error: {err_msg}'})}\n\n"
+            return
 
     # Use 'avc1' for H264 (better browser support)
     fourcc = cv2.VideoWriter_fourcc(*'avc1')
@@ -105,10 +123,11 @@ def process_video(input_path, output_path, mode="mediapipe"):
         frame_idx += 1
         
         if frame_idx % 10 == 0: 
-            print(f"Frame {frame_idx}/{total_frames}", flush=True)
+            import json
+            yield f"data: {json.dumps({'progress': f'Frame {frame_idx}/{total_frames}'})}\n\n"
         
         # 1. Pitch Detection (Optimized: Detect every 100 frames since it's static)
-        if frame_idx == 1 or frame_idx % 100 == 0:
+        if (frame_idx == 1 or frame_idx % 100 == 0) and (mode == "auto" or mode == "mediapipe"):
             res_pitch = pitch_model.predict(frame, conf=0.5, verbose=False)
             pitch_boxes = []
             for res in res_pitch:
@@ -116,30 +135,40 @@ def process_video(input_path, output_path, mode="mediapipe"):
                     if int(box.cls[0]) == 1:
                         px1, py1, px2, py2 = box.xyxy[0].tolist()
                         pitch_boxes.append((px1, py1, px2, py2))
+        elif manual_pitch_pts and not pitch_boxes:
+            pitch_boxes = [tuple(manual_pitch_pts)]
         
-        # Draw pitch boxes (Removed for clean view)
-        pass
+        # Draw pitch boxes
+        for pbox in pitch_boxes:
+            if len(pbox) == 4:
+                cv2.rectangle(frame, (int(pbox[0]), int(pbox[1])), (int(pbox[2]), int(pbox[3])), (255, 255, 0), 2)
+            elif len(pbox) == 4 and isinstance(pbox[0], (list, tuple)): # 4 points
+                pts = np.array(pbox, np.int32).reshape((-1, 1, 2))
+                cv2.polylines(frame, [pts], isClosed=True, color=(255, 255, 0), thickness=2)
 
-        # 2. YOLO Ball, Bat, Batsman
-        results_ball = ball_model(frame, verbose=False, conf=0.15)
-        
+        # Strict Pitch Validation
+        pitch_valid = len(pitch_boxes) > 0
+
         all_batsmen = []
         all_bats = []
         ball_box = None
-        
-        for box in results_ball[0].boxes:
-            cls_id = int(box.cls[0])
-            cls_name = ball_model.names[cls_id].lower()
-            conf = float(box.conf[0])
-            coords = map(int, box.xyxy[0].tolist())
-            x1, y1, x2, y2 = coords
+
+        if pitch_valid:
+            # 2. YOLO Ball, Bat, Batsman
+            results_ball = ball_model(frame, verbose=False, conf=0.15)
             
-            if cls_name == 'batsman' or cls_id == 2: 
-                all_batsmen.append([x1, y1, x2, y2])
-            elif cls_name == 'bat' or cls_id == 1: 
-                all_bats.append([x1, y1, x2, y2])
-            elif cls_name == 'ball' or cls_id == 0: 
-                ball_box = [x1, y1, x2, y2]
+            for box in results_ball[0].boxes:
+                cls_id = int(box.cls[0])
+                cls_name = ball_model.names[cls_id].lower()
+                conf = float(box.conf[0])
+                x1, y1, x2, y2 = map(int, box.xyxy[0].tolist())
+                
+                if cls_name == 'batsman' or cls_id == 2: 
+                    all_batsmen.append([x1, y1, x2, y2])
+                elif cls_name == 'bat' or cls_id == 1: 
+                    all_bats.append([x1, y1, x2, y2])
+                elif cls_name == 'ball' or cls_id == 0: 
+                    ball_box = [x1, y1, x2, y2]
                 
         # 3. Logic: Find the REAL Batsman (Person with Bat inside Pitch)
         batsman_box = None
@@ -161,7 +190,7 @@ def process_video(input_path, output_path, mode="mediapipe"):
                     # If bat center is within person box or close
                     bat_cx, bat_cy = (bat[0]+bat[2])//2, (bat[1]+bat[3])//2
                     if (bman[0]-20) <= bat_cx <= (bman[2]+20) and (bman[1]-20) <= bat_cy <= (bman[3]+20):
-                        has_bat = True; break
+                        has_bat = True; best_bat = bat; break
                 
                 if has_bat:
                     best_batsman = bman
@@ -169,7 +198,21 @@ def process_video(input_path, output_path, mode="mediapipe"):
             
             batsman_box = best_batsman
 
-        # 4. Pose Detection (Only for the qualified batsman)
+            # Draw best batsman
+            if best_batsman:
+                cv2.rectangle(frame, (best_batsman[0], best_batsman[1]), (best_batsman[2], best_batsman[3]), (0, 255, 0), 2)
+                cv2.putText(frame, "Batsman", (best_batsman[0], best_batsman[1]-10), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 2)
+                
+            # Draw bat
+            if best_bat:
+                cv2.rectangle(frame, (best_bat[0], best_bat[1]), (best_bat[2], best_bat[3]), (0, 165, 255), 2)
+                cv2.putText(frame, "Bat", (best_bat[0], best_bat[1]-10), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 165, 255), 2)
+                
+            # Draw ball
+            if ball_box:
+                cv2.rectangle(frame, (ball_box[0], ball_box[1]), (ball_box[2], ball_box[3]), (0, 0, 255), 2)
+
+        # 4. Pose & Shot Analysis (Only for the Batsman)
         current_shot_label = ""
         current_shot_conf = 0.0
         if batsman_box:
@@ -179,6 +222,7 @@ def process_video(input_path, output_path, mode="mediapipe"):
             if crop.size > 0:
                 res_pose = pose.process(cv2.cvtColor(crop, cv2.COLOR_BGR2RGB))
                 if res_pose.pose_landmarks:
+                    mp_drawing.draw_landmarks(crop, res_pose.pose_landmarks, mp_pose.POSE_CONNECTIONS)
                     cw, ch = bx2-bx1, by2-by1
                     feat = []
                     for p in res_pose.pose_landmarks.landmark:
@@ -225,8 +269,8 @@ def process_video(input_path, output_path, mode="mediapipe"):
                     latched_shot_label, latched_shot_conf = current_shot_label, current_shot_conf
                     shot_display_countdown = SHOT_DISPLAY_FRAMES
 
-        # 6. Advanced Rendering (Stats Only)
-        # frame = draw_trail(frame, ball_track) # Removed for clean view
+        # 6. Advanced Rendering
+        frame = draw_trail(frame, ball_track)
         
         # 7. Hawk-Eye Physics
         speed = estimate_speed(ball_track, fps=fps)
@@ -247,19 +291,47 @@ def process_video(input_path, output_path, mode="mediapipe"):
         if ball_hit_bat and latched_shot_label:
             cv2.putText(frame, f"SHOT: {latched_shot_label} ({latched_shot_conf*100:.1f}%)", (30, 140), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 100), 2)
             if frame_idx % 10 == 0:
-                print(f"SHOT_DETECTED: {latched_shot_label}", flush=True)
+                pass # Removed debug print
         
         out.write(frame)
+        
+        if frame_idx % 3 == 0:
+            ret, buffer = cv2.imencode('.jpg', frame, [cv2.IMWRITE_JPEG_QUALITY, 40])
+            if ret:
+                import base64
+                b64 = base64.b64encode(buffer).decode('utf-8')
+                import json
+                yield f"data: {json.dumps({'frame': b64})}\n\n"
 
     cap.release(); out.release()
     if latched_shot_label:
-        print(f"FINAL_RESULT: {latched_shot_label}|{latched_shot_conf}", flush=True)
-    print("Video processing complete."); return True
+        import json
+        final_res = {"class_name": latched_shot_label, "conf": latched_shot_conf}
+        yield f"data: {json.dumps({'final_result': final_res})}\n\n"
+    
+    import json
+    yield f"data: {json.dumps({'progress': 'Video processing complete.'})}\n\n"
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--input", required=True)
     parser.add_argument("--output", required=True)
-    parser.add_argument("--mode", default="mediapipe")
+    parser.add_argument('--mode', type=str, default="mediapipe", help='Analysis mode or manual pitch JSON array')
     args = parser.parse_args()
-    process_video(args.input, args.output, args.mode)
+
+    for output in process_video(args.input, args.output, args.mode):
+        # When run standalone, we just print the SSE string or extract the progress
+        import json
+        if output.startswith("data: "):
+            try:
+                data = json.loads(output[6:])
+                if "progress" in data:
+                    print(data["progress"], flush=True)
+                elif "frame" in data:
+                    print(f"FRAME_DATA:{data['frame']}", flush=True)
+                elif "final_result" in data:
+                    print(f"FINAL_RESULT: {data['final_result']['class_name']}|{data['final_result']['conf']}", flush=True)
+                elif "error" in data:
+                    print(f"ERROR: {data['error']}", flush=True)
+            except:
+                pass

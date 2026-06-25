@@ -1,7 +1,7 @@
 import cv2
 import numpy as np
 
-def draw_analytics(frame, ball_data, objects, trajectory, predicted_path, impact_point, decision, fps, pitch_roi, stump_rect, manual_pitch, bat_zone=None, pad_zone=None, first_contact=None, show_setup=True, show_detections=False):
+def draw_analytics(frame, ball_data, objects, trajectory, predicted_path, impact_point, decision, fps, pitch_roi, stump_rect, manual_pitch, bat_zone=None, pad_zone=None, first_contact=None, show_setup=True, show_detections=False, shot_label="", shot_conf=0.0):
     overlay = frame.copy()
     
     # 1. Draw Setup Elements (Only if show_setup is True)
@@ -73,7 +73,9 @@ def draw_analytics(frame, ball_data, objects, trajectory, predicted_path, impact
     for pt in predicted_path:
         cv2.circle(frame, pt, 2, (0, 255, 0), -1)
         
-    # 7. Draw Impact/Collision Points (Moved to UI)
+    # 7. Draw Shot Label if predicted
+    if shot_label:
+        cv2.putText(frame, f"SHOT: {shot_label} ({shot_conf*100:.1f}%)", (30, 80), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 100), 2)
 
     # 8. Draw Status (FPS only, decision moved to UI)
     cv2.putText(frame, f"FPS: {int(fps)}", (10, 20), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 1)

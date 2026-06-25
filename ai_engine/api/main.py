@@ -10,7 +10,10 @@ from pydantic import BaseModel
 import io
 import json
 import joblib
+# Support for both Keras and ONNX model loading since process_video expects ONNX
 from tensorflow.keras.models import load_model
+import onnxruntime as ort
+from fastapi.responses import StreamingResponse
 
 # Initialize FastAPI
 app = FastAPI(title="Cricket Shot Detection API")
@@ -28,9 +31,20 @@ app.add_middleware(
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 MODELS_DIR = os.path.join(os.path.dirname(BASE_DIR), 'models')
 
+# Add paths to sys.path so we can import the video processing modules
+sys.path.append(os.path.dirname(BASE_DIR)) # ai_engine
+sys.path.append(os.path.join(os.path.dirname(os.path.dirname(BASE_DIR)), "cricket_lbw_system"))
+
+from process_video import process_video as pv_live
+try:
+    from process_lbw_video import process_video as pv_lbw
+except ImportError:
+    pv_lbw = None
+
 YOLO_MODEL_PATH = os.path.join(MODELS_DIR, "yolo_ball_best.pt")
 YOLO_PITCH_PATH = os.path.join(MODELS_DIR, "yolo_pitch_best.pt")
 SHOT_MODEL_PATH = os.path.join(MODELS_DIR, "lstm_shot_v2.keras")
+SHOT_ONNX_PATH  = os.path.join(MODELS_DIR, "lstm_shot_v2.onnx")
 SCALER_PATH     = os.path.join(MODELS_DIR, "scaler_v2.save")
 LABEL_MAP_PATH  = os.path.join(MODELS_DIR, "label_map_v2.json")
 
@@ -59,12 +73,18 @@ def load_models():
             pitch_yolo_model = YOLO(YOLO_PITCH_PATH)
             print("YOLO pitch model loaded.")
         
-        if os.path.exists(SHOT_MODEL_PATH):
+        if os.path.exists(SHOT_ONNX_PATH):
+            shot_model = ort.InferenceSession(SHOT_ONNX_PATH)
+            scaler = joblib.load(SCALER_PATH)
+            with open(LABEL_MAP_PATH, "r") as f:
+                classes = json.load(f)["classes"]
+            print("LSTM ONNX model loaded.")
+        elif os.path.exists(SHOT_MODEL_PATH):
             shot_model = load_model(SHOT_MODEL_PATH)
             scaler = joblib.load(SCALER_PATH)
             with open(LABEL_MAP_PATH, "r") as f:
                 classes = json.load(f)["classes"]
-            print("LSTM model loaded.")
+            print("LSTM Keras model loaded.")
 
         mp_pose = mp.solutions.pose
         pose_detector = mp_pose.Pose(static_image_mode=True, min_detection_confidence=0.5)
@@ -133,6 +153,32 @@ async def predict(
         }
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/process-video")
+async def process_video_endpoint(input_path: str = Form(...), output_path: str = Form(...), mode: str = Form("mediapipe")):
+    models_dict = {
+        'ball_model': yolo_model,
+        'pitch_model': pitch_yolo_model,
+        'shot_model': shot_model,
+        'scaler': scaler,
+        'classes': classes,
+        'pose_detector': pose_detector
+    }
+    return StreamingResponse(pv_live(input_path, output_path, mode, models_dict), media_type="text/event-stream")
+
+@app.post("/process-lbw-video")
+async def process_lbw_endpoint(input_path: str = Form(...), output_path: str = Form(...), mode: str = Form("auto")):
+    if not pv_lbw:
+        raise HTTPException(status_code=500, detail="LBW processor not found")
+    models_dict = {
+        'ball_model': yolo_model,
+        'pitch_model': pitch_yolo_model,
+        'shot_model': shot_model,
+        'scaler': scaler,
+        'classes': classes,
+        'pose_detector': pose_detector
+    }
+    return StreamingResponse(pv_lbw(input_path, output_path, mode, models_dict), media_type="text/event-stream")
 
 @app.get("/")
 def home():

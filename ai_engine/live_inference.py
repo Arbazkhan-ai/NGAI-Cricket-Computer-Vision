@@ -29,6 +29,7 @@ import threading
 frame_queue = queue.Queue(maxsize=1500)
 reader_thread = None
 stop_reader = False
+video_writer = None
 
 def camera_reader():
     global camera, frame_queue, stop_reader, connection_status
@@ -40,6 +41,11 @@ def camera_reader():
             success, frame = camera.read()
         
         if success:
+            if video_writer is not None:
+                try:
+                    video_writer.write(frame)
+                except Exception as e:
+                    print(f"Error writing to video: {e}")
             if not frame_queue.full():
                 frame_queue.put(frame)
             else:
@@ -52,6 +58,7 @@ def camera_reader():
             with camera_lock:
                 connection_status = "Video Finished / Interrupted"
                 if camera: camera.release(); camera = None
+                if video_writer: video_writer.release(); video_writer = None
             time.sleep(0.1)
 
 
@@ -249,6 +256,8 @@ def connect_camera():
     
     with camera_lock:
         if camera: camera.release()
+        global video_writer
+        if video_writer: video_writer.release(); video_writer = None
     
     video_source = ip
     if str(ip).isdigit():
@@ -270,6 +279,21 @@ def connect_camera():
     if camera and camera.isOpened():
         connection_status = "Connected"
         current_ip = ip
+        
+        # Read a frame to get size for VideoWriter
+        success, frame = camera.read()
+        if success:
+            h, w = frame.shape[:2]
+            fps = 30.0
+            timestamp = time.strftime("%Y%m%d_%H%M%S")
+            upload_dir = os.path.join(os.path.dirname(BASE_DIR), 'shared', 'uploads')
+            os.makedirs(upload_dir, exist_ok=True)
+            save_path = os.path.join(upload_dir, f"live_recording_{timestamp}.mp4")
+            fourcc = cv2.VideoWriter_fourcc(*'mp4v')
+            video_writer = cv2.VideoWriter(save_path, fourcc, fps, (w, h))
+            if not frame_queue.full():
+                frame_queue.put(frame)
+                
         reader_thread = threading.Thread(target=camera_reader, daemon=True)
         reader_thread.start()
         return jsonify({"status": "success", "message": "Connected"})
@@ -415,8 +439,10 @@ def generate_frames():
                     import cv2
                     pts = np.array(manual_pitch_pts, np.int32)
                     on_pitch = cv2.pointPolygonTest(pts, (float(cx), float(cy)), False) >= 0
+                elif pitch_boxes:
+                    on_pitch = any(px1 <= cx <= px2 and py1 <= cy <= py2 for (px1, py1, px2, py2) in pitch_boxes)
                 else:
-                    on_pitch = True if not pitch_boxes else any(px1 <= cx <= px2 and py1 <= cy <= py2 for (px1, py1, px2, py2) in pitch_boxes)
+                    on_pitch = False
                 
                 if not on_pitch: continue
                 
@@ -458,8 +484,14 @@ def generate_frames():
             x1, y1, x2, y2, cls_name, conf = current_ball_box
             cx, cy = int((x1+x2)/2), int((y1+y2)/2)
             
-            # Pitch Constraint with generous margin
-            near_pitch = True if not pitch_boxes else any((pbox[0]-250) <= cx <= (pbox[2]+250) and (pbox[1]-250) <= cy <= (pbox[3]+250) for pbox in pitch_boxes)
+            # Strict Pitch Constraint with generous margin
+            if manual_pitch_pts and len(manual_pitch_pts) == 4:
+                pts = np.array(manual_pitch_pts, np.int32)
+                near_pitch = cv2.pointPolygonTest(pts, (float(cx), float(cy)), False) >= -250
+            elif pitch_boxes:
+                near_pitch = any((pbox[0]-250) <= cx <= (pbox[2]+250) and (pbox[1]-250) <= cy <= (pbox[3]+250) for pbox in pitch_boxes)
+            else:
+                near_pitch = False
             if near_pitch:
                 ball_track.append((cx, cy))
                 frames_without_ball = 0
@@ -584,10 +616,13 @@ def generate_frames():
 
 @app.route('/api/disconnect', methods=['POST'])
 def disconnect_camera():
-    global camera, connection_status
+    global camera, connection_status, video_writer
     if camera:
         camera.release()
         camera = None
+    if video_writer:
+        video_writer.release()
+        video_writer = None
     connection_status = "Disconnected"
     return jsonify({"status": "success", "message": "Camera disconnected"})
 
