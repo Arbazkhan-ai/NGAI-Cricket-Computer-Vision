@@ -550,8 +550,33 @@ function startLiveLbwService() {
     });
 }
 
-// Start both persistent services
-// startPythonProcess(); removed
+let fastApiProcess = null;
+
+function startFastAPIService() {
+    const aiEngineDir = path.join(__dirname, '..', 'ai_engine');
+    console.log(`Starting FastAPI AI Engine...`);
+    
+    let exe = PYTHON_EXECUTABLE;
+    if (!fs.existsSync(exe)) exe = 'python';
+
+    fastApiProcess = spawn(exe, ['-m', 'uvicorn', 'api.main:app', '--host', '127.0.0.1', '--port', '8000'], { cwd: aiEngineDir });
+
+    fastApiProcess.stdout.on('data', (data) => console.log(`FASTAPI: ${data}`));
+    fastApiProcess.stderr.on('data', (data) => {
+        const out = data.toString();
+        // Ignore expected warnings or info, but log errors
+        console.error(`FASTAPI ERR: ${out}`);
+    });
+
+    fastApiProcess.on('close', (code) => {
+        console.log(`FastAPI service exited with code ${code}. Restarting in 2s...`);
+        fastApiProcess = null;
+        setTimeout(startFastAPIService, 2000);
+    });
+}
+
+// Start all persistent services
+startFastAPIService();
 startLiveService();
 startLiveLbwService();
 
@@ -890,3 +915,16 @@ app.post('/api/reset-password', async (req, res) => {
 app.listen(PORT, () => {
     console.log(`Server running on http://localhost:${PORT}`);
 });
+
+function cleanupProcesses() {
+    const { execSync } = require('child_process');
+    console.log('Cleaning up child processes...');
+    try { if (fastApiProcess && fastApiProcess.pid) execSync(`taskkill /pid ${fastApiProcess.pid} /f /t`, {stdio: 'ignore'}); } catch(e) {}
+    try { if (liveProcess && liveProcess.pid) execSync(`taskkill /pid ${liveProcess.pid} /f /t`, {stdio: 'ignore'}); } catch(e) {}
+    try { if (liveLbwProcess && liveLbwProcess.pid) execSync(`taskkill /pid ${liveLbwProcess.pid} /f /t`, {stdio: 'ignore'}); } catch(e) {}
+}
+
+process.on('exit', cleanupProcesses);
+process.on('SIGINT', () => { process.exit(); });
+process.on('SIGTERM', () => { process.exit(); });
+process.on('SIGUSR2', () => { process.exit(); });
