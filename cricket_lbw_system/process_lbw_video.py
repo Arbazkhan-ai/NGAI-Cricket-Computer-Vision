@@ -140,7 +140,7 @@ def process_video(input_path, output_path, mode="auto", models_dict=None):
         bat_zone = None
         if bat_data:
             btx1, bty1, btx2, bty2 = bat_data['bbox']
-            bat_zone = (max(0, btx1 - 25), max(0, bty1 - 25), btx2 + 25, bty2 + 25)
+            bat_zone = (btx1, bty1, btx2, bty2)
             
         pad_zone = None
         pose_results, leg_positions, pose_offset = None, [], None
@@ -149,7 +149,7 @@ def process_video(input_path, output_path, mode="auto", models_dict=None):
             if leg_positions:
                 lx = [p[0] for p in leg_positions]
                 ly = [p[1] for p in leg_positions]
-                pad_zone = (min(lx) - 30, min(ly) - 30, max(lx) + 30, max(ly) + 30)
+                pad_zone = (min(lx), min(ly), max(lx), max(ly))
             else:
                 bx1, by1, bx2, by2 = batsman_data['bbox']
                 pad_zone = (bx1, int(by1 + (by2-by1)*0.5), bx2, by2)
@@ -228,7 +228,13 @@ def process_video(input_path, output_path, mode="auto", models_dict=None):
                 import base64
                 b64 = base64.b64encode(buffer).decode('utf-8')
                 import json
-                yield f"data: {json.dumps({'frame': b64})}\n\n"
+                stats = {
+                    'decision': decision,
+                    'contact': lbw_logic.first_contact,
+                    'shot_label': current_shot_label,
+                    'shot_conf': current_shot_conf
+                }
+                yield f"data: {json.dumps({'frame': b64, 'stats': stats})}\n\n"
 
     cap.release()
     out.release()

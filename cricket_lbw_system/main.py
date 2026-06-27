@@ -173,8 +173,7 @@ def main():
             bat_zone = None
             if bat_data:
                 btx1, bty1, btx2, bty2 = bat_data['bbox']
-                # Increased buffer (25px) for more reliable collision
-                bat_zone = (max(0, btx1 - 25), max(0, bty1 - 25), btx2 + 25, bty2 + 25)
+                bat_zone = (btx1, bty1, btx2, bty2)
                 
             pad_zone = None
             # Option 2: Use MediaPipe landmarks for Pad Zone
@@ -185,8 +184,7 @@ def main():
                     # Calculate bounding box of the leg landmarks
                     lx = [p[0] for p in leg_positions]
                     ly = [p[1] for p in leg_positions]
-                    # Pad zone buffer increased to 30px
-                    pad_zone = (min(lx) - 30, min(ly) - 30, max(lx) + 30, max(ly) + 30)
+                    pad_zone = (min(lx), min(ly), max(lx), max(ly))
                 else:
                     # Fallback: Use bottom half of batsman bbox
                     bx1, by1, bx2, by2 = batsman_data['bbox']

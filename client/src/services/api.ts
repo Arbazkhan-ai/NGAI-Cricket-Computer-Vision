@@ -33,7 +33,7 @@ export const analyzeImage = async (file: File, mode: 'mediapipe' | 'yolo' = 'med
     return response.json();
 };
 
-export const analyzeVideo = async (file: File, mode: string = 'mediapipe', onProgress?: (msg: string, frameData?: string) => void): Promise<any> => {
+export const analyzeVideo = async (file: File, mode: string = 'mediapipe', onProgress?: (msg: string, frameData?: string, stats?: any) => void): Promise<any> => {
     const formData = new FormData();
     formData.append('video', file);
     formData.append('mode', mode);
@@ -61,10 +61,10 @@ export const analyzeVideo = async (file: File, mode: string = 'mediapipe', onPro
                 try {
                     const data = JSON.parse(line.slice(6));
                     if (data.progress && onProgress) {
-                        onProgress(data.progress);
+                        onProgress(data.progress, undefined, data.stats);
                     }
                     if (data.frame && onProgress) {
-                        onProgress('', data.frame);
+                        onProgress('', data.frame, data.stats);
                     }
                     if (data.video_url) {
                         finalResult = data;
@@ -143,7 +143,7 @@ export const analyzeExistingVideo = async (id: number, type: 'shot' | 'lbw', sou
     return finalResult;
 };
 
-export const analyzeLbwVideo = async (file: File, mode: string = 'auto', onProgress?: (msg: string, frameData?: string) => void): Promise<any> => {
+export const analyzeLbwVideo = async (file: File, mode: string = 'auto', onProgress?: (msg: string, frameData?: string, stats?: any) => void): Promise<any> => {
     const formData = new FormData();
     formData.append('video', file);
     formData.append('mode', mode);
@@ -175,10 +175,10 @@ export const analyzeLbwVideo = async (file: File, mode: string = 'auto', onProgr
                 try {
                     const data = JSON.parse(line.slice(6));
                     if (data.progress && onProgress) {
-                        onProgress(data.progress);
+                        onProgress(data.progress, undefined, data.stats);
                     }
                     if (data.frame && onProgress) {
-                        onProgress('', data.frame);
+                        onProgress('', data.frame, data.stats);
                     }
                     if (data.video_url) {
                         finalResult = data;

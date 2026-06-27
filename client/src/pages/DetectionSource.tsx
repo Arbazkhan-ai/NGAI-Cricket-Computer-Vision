@@ -15,6 +15,10 @@ export default function DetectionSource() {
     const [previewUrl, setPreviewUrl] = useState<string | null>(null);
     const [liveStreamUrl, setLiveStreamUrl] = useState<string | null>(null);
 
+    const [lbwDecision, setLbwDecision] = useState<string | null>(null);
+    const [firstContact, setFirstContact] = useState<string | null>(null);
+    const [shotType, setShotType] = useState<{label: string, conf: number} | null>(null);
+
     const [isPitchSetup, setIsPitchSetup] = useState(false);
     const [manualPitchPts, setManualPitchPts] = useState<{x: number, y: number}[]>([]);
 
@@ -213,11 +217,16 @@ export default function DetectionSource() {
             const ptsString = isAuto ? 'auto' : JSON.stringify(manualPitchPts.map(p => [Math.round(p.x), Math.round(p.y)]));
             const apiMethod = analysisType === 'shot' ? analyzeVideo : analyzeLbwVideo;
             
-            const res = await apiMethod(file, ptsString, (msg, frameData) => {
+            const res = await apiMethod(file, ptsString, (msg, frameData, stats) => {
                 if (frameData) {
                     setLiveStreamUrl(`data:image/jpeg;base64,${frameData}`);
                 } else if (msg) {
                     setAnalysisProgress(msg);
+                }
+                if (stats) {
+                    if (stats.decision) setLbwDecision(stats.decision);
+                    if (stats.contact) setFirstContact(stats.contact);
+                    if (stats.shot_label) setShotType({ label: stats.shot_label, conf: stats.shot_conf });
                 }
             });
             
@@ -247,6 +256,9 @@ export default function DetectionSource() {
         setAnalysisResult(null);
         setPreviewUrl(null);
         setLiveStreamUrl(null);
+        setLbwDecision(null);
+        setFirstContact(null);
+        setShotType(null);
         setIsPitchSetup(false);
         setManualPitchPts([]);
         const url = URL.createObjectURL(file);
@@ -373,6 +385,9 @@ export default function DetectionSource() {
         setPreviewUrl(null);
         setLiveStreamUrl(null);
         setAnalysisResult(null);
+        setLbwDecision(null);
+        setFirstContact(null);
+        setShotType(null);
         setIsPitchSetup(false);
         setManualPitchPts([]);
         if (fileInputRef.current) fileInputRef.current.value = '';
@@ -608,6 +623,38 @@ export default function DetectionSource() {
                             {/* Preview Area */}
                             {(previewUrl || liveStreamUrl) && (
                                 <div className="relative w-full max-w-2xl mx-auto mb-8">
+                                    {(isAnalyzing || lbwDecision || shotType || firstContact) && selectedMethod === 'video' && (
+                                        <div className="absolute top-4 left-4 right-4 z-20 flex flex-wrap gap-4 justify-center pointer-events-none">
+                                            {(analysisType === 'lbw' || analysisType === 'unified') && (
+                                                <>
+                                                    <div className="bg-black/60 backdrop-blur-md rounded-xl p-3 border border-white/20 min-w-[120px]">
+                                                        <div className="text-emerald-100 text-[10px] font-bold uppercase tracking-wider mb-1">LBW Decision</div>
+                                                        <div className={`text-xl font-black ${lbwDecision === 'OUT' ? 'text-red-400' : lbwDecision === 'NOT OUT' ? 'text-green-400' : 'text-white'}`}>
+                                                            {lbwDecision || 'Waiting...'}
+                                                        </div>
+                                                    </div>
+                                                    <div className="bg-black/60 backdrop-blur-md rounded-xl p-3 border border-white/20 min-w-[120px]">
+                                                        <div className="text-emerald-100 text-[10px] font-bold uppercase tracking-wider mb-1">Impact</div>
+                                                        <div className={`text-xl font-black ${firstContact === 'BAT' ? 'text-green-400' : firstContact === 'PAD' ? 'text-red-400' : 'text-gray-400'}`}>
+                                                            {firstContact || '-'}
+                                                        </div>
+                                                    </div>
+                                                </>
+                                            )}
+                                            {(analysisType === 'unified' || analysisType === 'shot') && (
+                                                <div className="bg-black/60 backdrop-blur-md rounded-xl p-3 border border-white/20 min-w-[120px]">
+                                                    <div className="text-emerald-100 text-[10px] font-bold uppercase tracking-wider mb-1">Detected Shot</div>
+                                                    <div className="text-xl font-black text-blue-300">
+                                                        {shotType ? (
+                                                            <span>{shotType.label} <span className="text-sm opacity-70">({Math.round(shotType.conf * 100)}%)</span></span>
+                                                        ) : (
+                                                            <span className="text-gray-400">-</span>
+                                                        )}
+                                                    </div>
+                                                </div>
+                                            )}
+                                        </div>
+                                    )}
                                     <div className="relative rounded-2xl overflow-hidden border-4 border-white shadow-2xl bg-black">
                                         {liveStreamUrl ? (
                                             <img

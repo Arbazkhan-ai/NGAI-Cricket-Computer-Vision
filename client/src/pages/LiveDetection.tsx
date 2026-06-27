@@ -278,7 +278,7 @@ export default function LiveDetection() {
                         <>
                             <div className="bg-white/10 backdrop-blur-md rounded-2xl p-4 border border-white/20 flex-1 min-w-[200px]">
                                 <div className="text-emerald-100 text-xs font-bold uppercase tracking-wider mb-1">LBW Decision</div>
-                                <div className={`text-3xl font-black ${lbwDecision === 'OUT' ? 'text-red-400' : 'text-white'}`}>
+                                <div className={`text-3xl font-black ${lbwDecision === 'OUT' ? 'text-red-400' : lbwDecision === 'NOT OUT' ? 'text-green-400' : 'text-white'}`}>
                                     {lbwDecision || 'Waiting...'}
                                 </div>
                             </div>
