@@ -26,7 +26,7 @@ camera_lock = threading.Lock()
 import queue
 import threading
 
-frame_queue = queue.Queue(maxsize=1500)
+frame_queue = queue.Queue(maxsize=2)
 reader_thread = None
 stop_reader = False
 video_writer = None

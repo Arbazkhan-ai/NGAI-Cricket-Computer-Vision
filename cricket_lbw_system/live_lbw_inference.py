@@ -21,7 +21,7 @@ import threading
 import queue
 
 camera_lock = threading.Lock()
-frame_queue = queue.Queue(maxsize=300)
+frame_queue = queue.Queue(maxsize=2)
 stop_reader_thread = False
 reader_thread_obj = None
 video_writer = None
@@ -98,10 +98,11 @@ def camera_reader_loop():
                     video_writer.write(frame)
                 except Exception as e:
                     print(f"Error writing to video: {e}")
-            # If queue is full, wait for it to clear slightly
             if frame_queue.full():
-                time.sleep(0.01)
-                continue
+                try:
+                    frame_queue.get_nowait()
+                except queue.Empty:
+                    pass
             frame_queue.put(frame)
         else:
             with camera_lock:

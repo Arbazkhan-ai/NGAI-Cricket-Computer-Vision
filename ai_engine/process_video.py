@@ -278,16 +278,7 @@ def process_video(input_path, output_path, mode="mediapipe", models_dict=None):
         spin = spin_intensity(ball_track)
         ball_type = get_ball_type(ball_track, speed)
 
-                classes = json.load(f)["classes"]
-                
-            mp_pose = mp.solutions.pose
-            pose = mp_pose.Pose(static_image_mode=False, min_detection_confidence=0.5, min_tracking_confidence=0.5, model_complexity=2)
-        except Exception as e:
-            import traceback
-            err_msg = str(e)
-            traceback.print_exc()
-            yield f"data: {json.dumps({'error': f'Init Error: {err_msg}'})}\n\n"
-            return
+
 
     # Use 'avc1' for H264 (better browser support)
     fourcc = cv2.VideoWriter_fourcc(*'avc1')
