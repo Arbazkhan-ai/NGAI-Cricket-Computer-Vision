@@ -32,7 +32,7 @@ stop_reader = False
 video_writer = None
 
 def camera_reader():
-    global camera, frame_queue, stop_reader, connection_status
+    global camera, frame_queue, stop_reader, connection_status, is_video_file
     while not stop_reader:
         with camera_lock:
             if camera is None or not camera.isOpened():
@@ -46,14 +46,20 @@ def camera_reader():
                     video_writer.write(frame)
                 except Exception as e:
                     print(f"Error writing to video: {e}")
-            if not frame_queue.full():
-                frame_queue.put(frame)
+            
+            if getattr(sys.modules[__name__], 'is_video_file', False):
+                # Block until there is space in the queue to avoid dropping frames for video files
+                frame_queue.put(frame, block=True)
             else:
-                try:
-                    frame_queue.get_nowait()
-                except queue.Empty:
-                    pass
-                frame_queue.put(frame)
+                # For live webcams, drop oldest frame to maintain realtime
+                if not frame_queue.full():
+                    frame_queue.put(frame)
+                else:
+                    try:
+                        frame_queue.get_nowait()
+                    except queue.Empty:
+                        pass
+                    frame_queue.put(frame)
         else:
             with camera_lock:
                 connection_status = "Video Finished / Interrupted"
@@ -259,11 +265,14 @@ def connect_camera():
         global video_writer
         if video_writer: video_writer.release(); video_writer = None
     
+    global is_video_file
+    is_video_file = False
     video_source = ip
     if str(ip).isdigit():
         video_source = int(ip)
     elif isinstance(ip, str) and (ip.startswith('/uploads/') or ip.startswith('uploads/')):
         video_source = os.path.join(os.path.dirname(BASE_DIR), 'shared', ip.lstrip('/'))
+        is_video_file = True
 
     print(f"Connecting to: {video_source}")
     with camera_lock:
@@ -471,8 +480,12 @@ def generate_frames():
                         
                     pose_buffer.append(feat)
                     if len(pose_buffer) > SEQ_LEN: pose_buffer.pop(0)
-                    if len(pose_buffer) == SEQ_LEN and shot_model:
-                        X = np.array(pose_buffer, dtype=np.float32)
+                    
+                    if len(pose_buffer) >= 5 and shot_model:
+                        temp_buffer = pose_buffer.copy()
+                        while len(temp_buffer) < SEQ_LEN:
+                            temp_buffer.insert(0, temp_buffer[0]) # Pad at the beginning
+                        X = np.array(temp_buffer, dtype=np.float32)
                         X_scaled = scaler.transform(X).reshape(1, SEQ_LEN, -1).astype(np.float32)
                         ort_inputs = {shot_model.get_inputs()[0].name: X_scaled}
                         preds = shot_model.run(None, ort_inputs)[0]
@@ -500,8 +513,16 @@ def generate_frames():
                     tracked_trajectory = []
             else:
                 frames_without_ball += 1
+                if frames_without_ball <= MAX_MISSING_FRAMES and len(ball_track) >= 2:
+                    dx = ball_track[-1][0] - ball_track[-2][0]
+                    dy = ball_track[-1][1] - ball_track[-2][1]
+                    ball_track.append((int(ball_track[-1][0] + dx), int(ball_track[-1][1] + dy)))
         else:
             frames_without_ball += 1
+            if frames_without_ball <= MAX_MISSING_FRAMES and len(ball_track) >= 2:
+                dx = ball_track[-1][0] - ball_track[-2][0]
+                dy = ball_track[-1][1] - ball_track[-2][1]
+                ball_track.append((int(ball_track[-1][0] + dx), int(ball_track[-1][1] + dy)))
             if frames_without_ball > MAX_MISSING_FRAMES: ball_track = []; ball_hit_bat = False
 
         if current_ball_box and batsman_box and all_bats:

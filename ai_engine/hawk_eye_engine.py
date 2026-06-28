@@ -57,18 +57,26 @@ def get_ball_type(track, speed_kmh):
     """
     Classifies the delivery based on trajectory and speed.
     """
-    if len(track) < 8:
+    if len(track) < 5:
         return "ANALYZING..."
     
     pts = np.array(track)
     x, y = pts[:, 0], pts[:, 1]
     
+    # Smooth the y coordinates slightly to avoid false bounces from noise
+    y_smooth = y.copy()
+    if len(y) > 4:
+        for i in range(1, len(y) - 1):
+            y_smooth[i] = (y[i-1] + y[i] + y[i+1]) / 3.0
+
     # 1. Detect Bounce
     bounce_idx = -1
-    for i in range(2, len(y) - 2):
-        if y[i] > y[i - 1] and y[i] > y[i + 1]:
-            bounce_idx = i
-            break
+    for i in range(2, len(y_smooth) - 2):
+        if y_smooth[i] > y_smooth[i - 1] and y_smooth[i] > y_smooth[i + 1]:
+            # Also require a minimum prominence
+            if y_smooth[i] - y_smooth[i-2] > 2 and y_smooth[i] - y_smooth[i+2] > 2:
+                bounce_idx = i
+                break
     
     # 2. Trajectory Analysis
     if bounce_idx != -1:
@@ -87,7 +95,7 @@ def get_ball_type(track, speed_kmh):
         
         # --- Spin/Swing Classification ---
         if abs(dx_post) > 25:
-            spin_type = "LEG SPIN (Outer)" if dx_post > 0 else "OFF SPIN (Inner)"
+            spin_type = "LEG SPIN" if dx_post > 0 else "OFF SPIN"
             return f"{length} {spin_type}"
         elif abs(dx_pre) > 35:
             swing_type = "OUT-SWING" if dx_pre > 0 else "IN-SWING"
@@ -97,6 +105,11 @@ def get_ball_type(track, speed_kmh):
         return f"{length} BALL"
     
     else:
-        # No bounce detected -> Full Toss
+        # No bounce detected -> Full Toss or hasn't bounced yet
+        dx_total = x[-1] - x[0]
+        if abs(dx_total) > 35:
+            swing_type = "OUT-SWING" if dx_total > 0 else "IN-SWING"
+            return f"FULL TOSS {swing_type}"
+
         if speed_kmh > 130: return "FAST FULL TOSS"
         return "FULL TOSS"

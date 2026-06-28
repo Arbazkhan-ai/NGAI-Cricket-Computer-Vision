@@ -278,14 +278,14 @@ export default function LiveDetection() {
                         <>
                             <div className="bg-white/10 backdrop-blur-md rounded-2xl p-4 border border-white/20 flex-1 min-w-[200px]">
                                 <div className="text-emerald-100 text-xs font-bold uppercase tracking-wider mb-1">LBW Decision</div>
-                                <div className={`text-3xl font-black ${lbwDecision === 'OUT' ? 'text-red-400' : lbwDecision === 'NOT OUT' ? 'text-green-400' : 'text-white'}`}>
+                                <div className={`text-3xl font-black ${lbwDecision?.includes('OUT') && !lbwDecision?.includes('NOT') ? 'text-red-400' : lbwDecision?.includes('NOT OUT') ? 'text-green-400' : 'text-white'}`}>
                                     {lbwDecision || 'Waiting...'}
                                 </div>
                             </div>
                             
                             <div className="bg-white/10 backdrop-blur-md rounded-2xl p-4 border border-white/20 flex-1 min-w-[200px]">
                                 <div className="text-emerald-100 text-xs font-bold uppercase tracking-wider mb-1">Impact Point</div>
-                                <div className={`text-3xl font-black ${firstContact === 'BAT' ? 'text-green-400' : firstContact === 'PAD' ? 'text-red-400' : firstContact === 'Analyzing...' ? 'text-yellow-400 animate-pulse' : 'text-gray-400'}`}>
+                                <div className={`text-3xl font-black ${firstContact === 'BAT' ? 'text-green-400' : (firstContact === 'PAD' || firstContact === 'STUMPS') ? 'text-red-400' : firstContact === 'Analyzing...' ? 'text-yellow-400 animate-pulse' : 'text-gray-400'}`}>
                                     {firstContact || '-'}
                                 </div>
                             </div>

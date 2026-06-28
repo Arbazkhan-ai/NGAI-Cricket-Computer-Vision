@@ -3,7 +3,7 @@ import { useGame } from '../context/GameContext';
 import DetectionSource from './DetectionSource';
 
 export default function RuleBasedGame() {
-    const { rules, toggleRule, gameActive, setGameActive } = useGame();
+    const { rules, toggleRule, gameActive, setGameActive, score } = useGame();
 
     const handleStartGame = () => {
         setGameActive(!gameActive);
@@ -97,6 +97,10 @@ export default function RuleBasedGame() {
                 </div>
             ) : (
                 <div className="mt-8 animate-in slide-in-from-bottom-4 duration-500">
+                    <div className="bg-emerald-600 rounded-2xl p-6 text-white text-center mb-6 shadow-lg">
+                        <h2 className="text-xl font-bold opacity-90 uppercase tracking-widest">Game Score</h2>
+                        <div className="text-6xl font-black mt-2">{score}</div>
+                    </div>
                     <DetectionSource />
                 </div>
             )}

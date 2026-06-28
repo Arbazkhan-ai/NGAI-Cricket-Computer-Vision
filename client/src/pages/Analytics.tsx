@@ -53,12 +53,21 @@ const processData = (history: any[], matches: any[]) => {
         if (detections.length > 0) {
             // Count first detection
             const det = detections[0];
-            const n = det.class_name || det.decision || ID_TO_NAME[det.class_id] || 'Unknown';
-            if (counts[n] !== undefined) counts[n]++;
-            else counts[n] = (counts[n] || 0) + 1;
+            let n = det.class_name;
+            if (!n || n === 'Waiting...' || n === '') {
+                n = det.decision || det.lbw_decision;
+            }
+            if (!n || n === 'PENDING' || n === 'CHECK LBW' || n === 'TRACKING...') {
+                n = ID_TO_NAME[det.class_id] || 'Unknown';
+            }
+            
+            if (n !== 'Unknown' && n !== 'Waiting...' && n !== 'PENDING' && n !== 'CHECK LBW' && n !== 'TRACKING...') {
+                if (counts[n] !== undefined) counts[n]++;
+                else counts[n] = 1;
+            }
 
             // Dummy logic for Hit Rate (e.g. higher conf = hit)
-            if (det.conf > 0.7) hitCount++;
+            if (det.conf && det.conf > 0.7) hitCount++;
         }
     });
 

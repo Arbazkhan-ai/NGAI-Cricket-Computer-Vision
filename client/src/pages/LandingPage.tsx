@@ -285,7 +285,7 @@ export default function LandingPage() {
                                         src={`http://127.0.0.1:8081/video_feed?t=${streamKey}`}
                                         alt="Live Demo Stream"
                                         className="w-full h-full max-h-[600px] object-contain rounded-xl border border-gray-800 bg-black"
-                                        onError={(e) => setDemoStatus('Error loading stream')}
+                                        onError={() => setDemoStatus('Error loading stream')}
                                     />
                                 ) : (
                                     <div className="text-center text-white flex flex-col items-center">

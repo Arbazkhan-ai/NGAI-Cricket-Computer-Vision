@@ -14,6 +14,15 @@ from lbw_logic import LBWLogic
 from visualization import draw_analytics
 from utils import resize_frame
 import onnxruntime as ort
+try:
+    sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..', 'ai_engine')))
+    from hawk_eye_engine import estimate_speed, swing_amount, spin_intensity, get_ball_type
+except ImportError:
+    estimate_speed = lambda *a, **k: 0
+    swing_amount = lambda *a, **k: 0
+    spin_intensity = lambda *a, **k: 0
+    get_ball_type = lambda *a, **k: "UNKNOWN"
+
 import joblib
 import json
 import requests
@@ -98,12 +107,15 @@ def camera_reader_loop():
                     video_writer.write(frame)
                 except Exception as e:
                     print(f"Error writing to video: {e}")
-            if frame_queue.full():
-                try:
-                    frame_queue.get_nowait()
-                except queue.Empty:
-                    pass
-            frame_queue.put(frame)
+            if getattr(sys.modules[__name__], 'is_video_file', False):
+                frame_queue.put(frame, block=True)
+            else:
+                if frame_queue.full():
+                    try:
+                        frame_queue.get_nowait()
+                    except queue.Empty:
+                        pass
+                frame_queue.put(frame)
         else:
             with camera_lock:
                 connection_status = "Video Finished / Interrupted"
@@ -299,13 +311,15 @@ def connect_camera():
         if camera: camera.release()
         global video_writer
         if video_writer: video_writer.release(); video_writer = None
-    current_ip = ip
     
-    if isinstance(ip, str) and ip.isdigit():
-        ip = int(ip)
-    video_source = ip if ip != '' else 0
-    if isinstance(ip, str) and ip.startswith('/uploads/'):
-        video_source = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), 'shared', ip.lstrip('/'))
+    global is_video_file
+    is_video_file = False
+    video_source = ip
+    if str(ip).isdigit():
+        video_source = int(ip)
+    elif isinstance(ip, str) and (ip.startswith('/uploads/') or ip.startswith('uploads/')):
+        video_source = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), 'shared', 'uploads', ip.split('uploads/')[-1])
+        is_video_file = True
     elif isinstance(ip, str) and ip.startswith('uploads/'):
         video_source = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), 'shared', ip)
 
@@ -324,6 +338,7 @@ def connect_camera():
 
     if camera and camera.isOpened():
         connection_status = "Connected"
+        global current_ip
         current_ip = ip
         
         success, frame = camera.read()
@@ -542,7 +557,7 @@ def generate_frames():
         # 5. Check Collision & Impact
         if lbw_logic.first_contact is None:
             prev_contact = lbw_logic.first_contact
-            lbw_logic.check_collision(trajectory, bat_zone, pad_zone)
+            lbw_logic.check_collision(trajectory, bat_zone, pad_zone, stump_rect)
             if lbw_logic.first_contact == "PAD" and prev_contact is None:
                 pad_hit_time = time.time()
 
@@ -554,18 +569,20 @@ def generate_frames():
         # 7. Judge LBW
         decision = lbw_logic.decision
         is_delay_active = False
+        ball_lost = frames_without_ball > 5
+        
         if lbw_logic.first_contact == "PAD":
             if decision == "PENDING" or decision == "CHECK LBW" or decision == "":
-                decision = lbw_logic.judge_lbw(predicted_path, stump_rect)
+                decision = lbw_logic.judge_lbw(predicted_path, stump_rect, ball_lost=ball_lost)
                 if decision in ["OUT", "NOT OUT", "NOT OUT (Missed Stumps)"] and lbw_decision_time is None:
                     lbw_decision_time = time.time()
             current_display_decision = decision
         else:
-            if lbw_logic.first_contact and (decision == "PENDING" or decision == "CHECK LBW" or decision == ""):
-                decision = lbw_logic.judge_lbw(predicted_path, stump_rect)
-                if decision in ["OUT", "NOT OUT", "NOT OUT (Missed Stumps)"] and lbw_decision_time is None:
+            if decision in ["PENDING", "CHECK LBW", "", "TRACKING..."]:
+                decision = lbw_logic.judge_lbw(predicted_path, stump_rect, ball_lost=ball_lost)
+                if decision in ["OUT", "OUT (BOWLED)", "NOT OUT", "NOT OUT (Missed Stumps)"] and lbw_decision_time is None:
                     lbw_decision_time = time.time()
-            current_display_decision = decision if lbw_logic.first_contact else None
+            current_display_decision = decision if (lbw_logic.first_contact or decision == "OUT (BOWLED)") else None
         
         # Log final decision once
         if decision not in ["PENDING", "CHECK LBW", ""] and pad_hit_time is not None:
@@ -590,6 +607,16 @@ def generate_frames():
         vis_impact_point = None if is_delay_active else lbw_logic.impact_point
         vis_first_contact = None if is_delay_active else lbw_logic.first_contact
 
+        speed = 0
+        swing = 0
+        spin = 0
+        ball_type = "ANALYZING..."
+        if estimate_speed and len(trajectory) > 0:
+            speed = estimate_speed(trajectory, fps=fps)
+            swing = swing_amount(trajectory)
+            spin = spin_intensity(trajectory)
+            ball_type = get_ball_type(trajectory, speed)
+
         annotated_frame = draw_analytics(
             frame, 
             ball_data, 
@@ -606,7 +633,11 @@ def generate_frames():
             pad_zone=pad_zone,
             first_contact=vis_first_contact,
             show_setup=False,
-            show_detections=show_landmarks_flag
+            show_detections=show_landmarks_flag,
+            speed=speed,
+            swing=swing,
+            spin=spin,
+            ball_type=ball_type
         )
 
         if decision and decision not in ["PENDING", "CHECK LBW", ""] and not is_delay_active:

@@ -230,20 +230,34 @@ app.post('/api/analyze-video', upload.single('video'), async (req, res) => {
         });
 
         proxyRes.on('end', () => {
-            const processedUrl = `/uploads/${filename}`;
-            const resultsData = JSON.stringify(finalShotResult ? [finalShotResult] : [{ class_name: 'Analysis Complete', conf: 1.0, type: 'video' }]);
+            // Re-encode with ffmpeg for browser compatibility
+            const tempPath = outputPath.replace('.mp4', '_temp.mp4');
+            const ffmpegArgs = ['-y', '-i', outputPath, '-c:v', 'libx264', '-preset', 'fast', '-crf', '22', '-c:a', 'copy', tempPath];
+            const ffmpegPath = require('ffmpeg-static');
+            const ffmpeg = require('child_process').spawn(ffmpegPath, ffmpegArgs);
             
-            db.query("INSERT INTO detections (image_path, results) VALUES (?, ?)", [processedUrl, resultsData], (err, results) => {
-                if (err) console.error("DB Error (Video):", err.message);
+            ffmpeg.on('close', (code) => {
+                if (code === 0) {
+                    require('fs').renameSync(tempPath, outputPath);
+                } else {
+                    console.log(`FFmpeg conversion failed with code ${code}, serving original file`);
+                }
+
+                const processedUrl = `/uploads/${filename}`;
+                const resultsData = JSON.stringify(finalShotResult ? [finalShotResult] : [{ class_name: 'Analysis Complete', conf: 1.0, type: 'video' }]);
                 
-                // Final success message with video URL and detection data
-                res.write(`data: ${JSON.stringify({ 
-                    message: 'Video processing complete', 
-                    video_url: processedUrl, 
-                    data: finalShotResult ? [finalShotResult] : null,
-                    db_id: results ? results.insertId : 0 
-                })}\n\n`);
-                res.end();
+                db.query("INSERT INTO detections (image_path, results) VALUES (?, ?)", [processedUrl, resultsData], (err, results) => {
+                    if (err) console.error("DB Error (Video):", err.message);
+                    
+                    // Final success message with video URL and detection data
+                    res.write(`data: ${JSON.stringify({ 
+                        message: 'Video processing complete', 
+                        video_url: processedUrl, 
+                        data: finalShotResult ? [finalShotResult] : null,
+                        db_id: results ? results.insertId : 0 
+                    })}\n\n`);
+                    res.end();
+                });
             });
         });
     });
@@ -322,7 +336,7 @@ app.post('/api/analyze-lbw-video', upload.single('video'), async (req, res) => {
             const processedUrl = `/uploads/${filename}`;
             const resultsData = JSON.stringify(finalDecision ? [finalDecision] : [{ decision: 'NOT OUT', conf: 1.0, type: 'lbw' }]);
             
-            db.query("INSERT INTO lbw_detections (video_path, results) VALUES (?, ?)", [processedUrl, resultsData], (err, results) => {
+            db.query("INSERT INTO detections (image_path, results) VALUES (?, ?)", [processedUrl, resultsData], (err, results) => {
                 if (err) console.error("DB Error (LBW Video):", err.message);
                 
                 // Final success message with video URL and detection data

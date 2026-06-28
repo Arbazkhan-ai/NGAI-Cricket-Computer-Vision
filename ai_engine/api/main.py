@@ -62,7 +62,7 @@ CONF_THRESHOLD = 0.70
 
 @app.on_event("startup")
 def load_models():
-    global yolo_model, shot_model, scaler, classes, pose_detector
+    global yolo_model, pitch_yolo_model, shot_model, scaler, classes, pose_detector
     
     try:
         if os.path.exists(YOLO_MODEL_PATH):

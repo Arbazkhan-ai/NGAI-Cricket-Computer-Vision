@@ -196,7 +196,7 @@ def main():
             # 5. Check Collision & Impact (Pass trajectory)
             if lbw_logic.first_contact is None:
                 prev_contact = lbw_logic.first_contact
-                lbw_logic.check_collision(trajectory, bat_zone, pad_zone)
+                lbw_logic.check_collision(trajectory, bat_zone, pad_zone, stump_rect)
                 if lbw_logic.first_contact == "PAD" and prev_contact is None:
                     pad_hit_time = time.time()
             

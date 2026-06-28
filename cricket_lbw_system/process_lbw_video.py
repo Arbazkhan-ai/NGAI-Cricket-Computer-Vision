@@ -12,6 +12,13 @@ from lbw_logic import LBWLogic
 from visualization import draw_analytics
 from utils import resize_frame
 
+BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+if os.path.join(BASE_DIR, "ai_engine") not in sys.path:
+    sys.path.append(os.path.join(BASE_DIR, "ai_engine"))
+try:
+    from hawk_eye_engine import estimate_speed, swing_amount, spin_intensity, get_ball_type
+except ImportError:
+    estimate_speed = swing_amount = spin_intensity = get_ball_type = None
 def process_video(input_path, output_path, mode="auto", models_dict=None):
     import json
     yield f"data: {json.dumps({'progress': f'Starting LBW processing: {input_path}'})}\n\n"
@@ -80,7 +87,9 @@ def process_video(input_path, output_path, mode="auto", models_dict=None):
     tracker = BallTracker(smoothing_factor=0.6, jump_threshold=120)
     predictor = TrajectoryPredictor()
     lbw_logic = LBWLogic()
-
+    frames_without_ball = 0
+    
+    pad_hit_time = None
     manual_pitch_pts = []
     if mode.startswith('[') and mode.endswith(']'):
         import json
@@ -173,12 +182,17 @@ def process_video(input_path, output_path, mode="auto", models_dict=None):
                         current_shot_label, current_shot_conf = classes[idx], float(preds[0][idx])
 
         # 4. Track Ball
+        if ball_center:
+            frames_without_ball = 0
+        else:
+            frames_without_ball += 1
+            
         trajectory = tracker.update(ball_center)
         
         # 5. Check Collision
         if lbw_logic.first_contact is None:
             prev_contact = lbw_logic.first_contact
-            lbw_logic.check_collision(trajectory, bat_zone, pad_zone)
+            lbw_logic.check_collision(trajectory, bat_zone, pad_zone, stump_rect)
             if lbw_logic.first_contact == "PAD" and prev_contact is None:
                 pad_hit_time = time.time()
 
@@ -189,8 +203,9 @@ def process_video(input_path, output_path, mode="auto", models_dict=None):
 
         # 7. Judge LBW
         decision = lbw_logic.decision
-        if decision == "PENDING" or decision == "CHECK LBW":
-            decision = lbw_logic.judge_lbw(predicted_path, stump_rect)
+        if decision in ["PENDING", "CHECK LBW", "TRACKING..."]:
+            ball_lost = frames_without_ball > 5
+            decision = lbw_logic.judge_lbw(predicted_path, stump_rect, ball_lost=ball_lost)
             
         if decision != "PENDING" and decision != "CHECK LBW":
             final_decision = decision
@@ -198,6 +213,16 @@ def process_video(input_path, output_path, mode="auto", models_dict=None):
         # 8. Visualization
         if pose_results:
             pose_detector.draw_skeleton(frame, pose_results, offset=pose_offset)
+            
+        speed = 0
+        swing = 0
+        spin = 0
+        ball_type = "ANALYZING..."
+        if estimate_speed and len(trajectory) > 0:
+            speed = estimate_speed(trajectory, fps=fps)
+            swing = swing_amount(trajectory)
+            spin = spin_intensity(trajectory)
+            ball_type = get_ball_type(trajectory, speed)
             
         output_frame = draw_analytics(
             frame, 
@@ -217,7 +242,11 @@ def process_video(input_path, output_path, mode="auto", models_dict=None):
             show_setup=True,
             show_detections=True,
             shot_label=current_shot_label,
-            shot_conf=current_shot_conf
+            shot_conf=current_shot_conf,
+            speed=speed,
+            swing=swing,
+            spin=spin,
+            ball_type=ball_type
         )
 
         out.write(output_frame)

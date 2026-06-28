@@ -1,7 +1,7 @@
 import cv2
 import numpy as np
 
-def draw_analytics(frame, ball_data, objects, trajectory, predicted_path, impact_point, decision, fps, pitch_roi, stump_rect, manual_pitch, bat_zone=None, pad_zone=None, first_contact=None, show_setup=True, show_detections=False, shot_label="", shot_conf=0.0):
+def draw_analytics(frame, ball_data, objects, trajectory, predicted_path, impact_point, decision, fps, pitch_roi, stump_rect, manual_pitch, bat_zone=None, pad_zone=None, first_contact=None, show_setup=True, show_detections=False, shot_label="", shot_conf=0.0, speed=0, swing=0, spin=0, ball_type="ANALYZING..."):
     overlay = frame.copy()
     
     # 1. Draw Setup Elements (Only if show_setup is True)
@@ -74,10 +74,15 @@ def draw_analytics(frame, ball_data, objects, trajectory, predicted_path, impact
         cv2.circle(frame, pt, 2, (0, 255, 0), -1)
         
     # 7. Draw Shot Label if predicted
-    if shot_label:
-        cv2.putText(frame, f"SHOT: {shot_label} ({shot_conf*100:.1f}%)", (30, 80), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 100), 2)
+    # Removed at user request - LBW analysis shouldn't show shot detection on video
 
     # 8. Draw Status (FPS only, decision moved to UI)
     cv2.putText(frame, f"FPS: {int(fps)}", (10, 20), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 1)
+    
+    # 9. Draw Hawk-Eye Stats
+    cv2.rectangle(frame, (20, 100), (450, 210), (0, 0, 0), -1)
+    cv2.putText(frame, f"TYPE: {ball_type}", (30, 130), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 255), 2)
+    cv2.putText(frame, f"SPEED: {speed} km/h", (30, 160), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 2)
+    cv2.putText(frame, f"SWING: {swing}px | SPIN: {spin}", (30, 190), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 0), 2)
     
     return frame

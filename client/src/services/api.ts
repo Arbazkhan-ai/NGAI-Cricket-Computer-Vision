@@ -93,7 +93,7 @@ export const uploadVideoOnly = async (file: File): Promise<{ video_path: string,
     return await response.json();
 };
 
-export const analyzeExistingVideo = async (id: number, type: 'shot' | 'lbw', sourceTable: 'matches' | 'detections' = 'detections', onProgress?: (msg: string) => void): Promise<any> => {
+export const analyzeExistingVideo = async (id: number, type: 'shot' | 'lbw' | 'unified', sourceTable: 'matches' | 'detections' = 'detections', onProgress?: (msg: string) => void): Promise<any> => {
     const response = await fetch(`${API_URL}/analyze-existing`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -112,20 +112,21 @@ export const analyzeExistingVideo = async (id: number, type: 'shot' | 'lbw', sou
         if (done) break;
 
         buffer += decoder.decode(value, { stream: true });
+        const lines = buffer.split('\n');
         
-        let newlineIndex;
-        while ((newlineIndex = buffer.indexOf('\n')) !== -1) {
-            const line = buffer.slice(0, newlineIndex).trim();
-            buffer = buffer.slice(newlineIndex + 1);
+        buffer = lines.pop() || '';
 
+        for (const line of lines) {
+            if (line.trim() === '') continue;
+            
             if (line.startsWith('data: ')) {
                 try {
-                    const data = JSON.parse(line.slice(6));
+                    const dataStr = line.slice(6).trim();
+                    if (!dataStr) continue;
+                    
+                    const data = JSON.parse(dataStr);
                     if (data.progress && onProgress) {
                         onProgress(data.progress);
-                    }
-                    if (data.frame && onProgress) {
-                        onProgress('', data.frame);
                     }
                     if (data.video_url) {
                         finalResult = data;
@@ -134,7 +135,7 @@ export const analyzeExistingVideo = async (id: number, type: 'shot' | 'lbw', sou
                         throw new Error(data.error);
                     }
                 } catch (e) {
-                    console.error("Error parsing SSE data", e);
+                    console.error("Error parsing SSE data", e, line);
                 }
             }
         }

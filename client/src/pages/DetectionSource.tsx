@@ -2,10 +2,19 @@ import { Camera, Video, Image as ImageIcon, Smartphone, MonitorPlay, UploadCloud
 import { useState, useRef, useEffect } from 'react';
 import { useNavigate, useLocation } from 'react-router-dom';
 import { analyzeImage, analyzeVideo, analyzeLbwVideo, type DetectionResult } from '../services/api';
+import { useGame } from '../context/GameContext';
 
 export default function DetectionSource() {
     const navigate = useNavigate();
     const location = useLocation();
+    
+    // For Rule-Based Game
+    let gameData: any = { gameActive: false, rules: [], setScore: () => {} };
+    try {
+        gameData = useGame();
+    } catch(e) {}
+    const { gameActive, rules, setScore } = gameData;
+
     const [selectedMethod, setSelectedMethod] = useState<string>(location.state?.method || 'live');
     const [selectedCameraType, setSelectedCameraType] = useState<string>('mobile');
     const [analysisType, setAnalysisType] = useState<'shot' | 'lbw' | 'unified'>('unified');
@@ -217,6 +226,9 @@ export default function DetectionSource() {
             const ptsString = isAuto ? 'auto' : JSON.stringify(manualPitchPts.map(p => [Math.round(p.x), Math.round(p.y)]));
             const apiMethod = analysisType === 'shot' ? analyzeVideo : analyzeLbwVideo;
             
+            let lastEvaluatedShot = '';
+            let lastEvaluatedDecision = '';
+
             const res = await apiMethod(file, ptsString, (msg, frameData, stats) => {
                 if (frameData) {
                     setLiveStreamUrl(`data:image/jpeg;base64,${frameData}`);
@@ -224,9 +236,41 @@ export default function DetectionSource() {
                     setAnalysisProgress(msg);
                 }
                 if (stats) {
-                    if (stats.decision) setLbwDecision(stats.decision);
+                    if (stats.decision) {
+                        setLbwDecision(stats.decision);
+                        if (gameActive && stats.decision !== 'PENDING' && stats.decision !== 'TRACKING...' && stats.decision !== 'CHECK LBW' && stats.decision !== lastEvaluatedDecision) {
+                            lastEvaluatedDecision = stats.decision;
+                            let pts = 0;
+                            if (stats.decision === 'OUT') {
+                                const r = rules.find((r: any) => r.id === 2);
+                                if (r && r.active) pts += r.points;
+                            }
+                            if (stats.decision === 'OUT (LBW)') {
+                                const r = rules.find((r: any) => r.id === 3);
+                                if (r && r.active) pts += r.points;
+                            }
+                            if (stats.decision === 'NOT OUT') {
+                                const r = rules.find((r: any) => r.id === 1);
+                                if (r && r.active) pts += r.points;
+                            }
+                            if (pts !== 0) setScore((prev: number) => prev + pts);
+                        }
+                    }
                     if (stats.contact) setFirstContact(stats.contact);
-                    if (stats.shot_label) setShotType({ label: stats.shot_label, conf: stats.shot_conf });
+                    if (stats.shot_label) {
+                        setShotType({ label: stats.shot_label, conf: stats.shot_conf });
+                        if (gameActive && stats.shot_label !== 'Waiting...' && stats.shot_label !== lastEvaluatedShot) {
+                            lastEvaluatedShot = stats.shot_label;
+                            let pts = 0;
+                            const hitRule = rules.find((r: any) => r.id === 1);
+                            if (hitRule && hitRule.active) pts += hitRule.points;
+                            if (stats.shot_label === 'Drive') {
+                                const driveRule = rules.find((r: any) => r.id === 4);
+                                if (driveRule && driveRule.active) pts += driveRule.points;
+                            }
+                            if (pts !== 0) setScore((prev: number) => prev + pts);
+                        }
+                    }
                 }
             });
             
@@ -380,7 +424,7 @@ export default function DetectionSource() {
         fileInputRef.current?.click();
     };
 
-    const handleAnalysisTypeChange = (type: 'shot' | 'lbw') => {
+    const handleAnalysisTypeChange = (type: 'shot' | 'lbw' | 'unified') => {
         setAnalysisType(type);
         setPreviewUrl(null);
         setLiveStreamUrl(null);
@@ -620,22 +664,50 @@ export default function DetectionSource() {
                                 disabled={isAnalyzing}
                             />
 
+                            {/* Action Buttons (Overlay / Top) */}
+                            {(previewUrl || liveStreamUrl) && !isAnalyzing && !isPitchSetup && (
+                                <div className="flex flex-col items-center gap-4 w-full mb-6 relative z-10">
+                                    {!liveStreamUrl && (
+                                        <button
+                                            onClick={startAnalysis}
+                                            className="bg-emerald-600 text-white px-12 py-4 rounded-2xl font-black text-lg shadow-xl shadow-emerald-100 hover:scale-105 active:scale-95 transition-all flex items-center gap-3"
+                                        >
+                                            <Zap className="w-6 h-6 fill-white" />
+                                            <span>START AI ANALYSIS</span>
+                                        </button>
+                                    )}
+                                    
+                                    <button
+                                        onClick={(e) => { 
+                                            e.stopPropagation(); 
+                                            setPreviewUrl(null); 
+                                            setLiveStreamUrl(null);
+                                            setAnalysisResult(null);
+                                            if (fileInputRef.current) fileInputRef.current.value = ''; // Reset memory
+                                        }}
+                                        className="text-gray-400 text-sm hover:text-emerald-600 transition-colors"
+                                    >
+                                        Choose Different File
+                                    </button>
+                                </div>
+                            )}
+
                             {/* Preview Area */}
                             {(previewUrl || liveStreamUrl) && (
                                 <div className="relative w-full max-w-2xl mx-auto mb-8">
-                                    {(isAnalyzing || lbwDecision || shotType || firstContact) && selectedMethod === 'video' && (
-                                        <div className="absolute top-4 left-4 right-4 z-20 flex flex-wrap gap-4 justify-center pointer-events-none">
+                                    {!isAnalyzing && (lbwDecision || shotType || firstContact) && selectedMethod === 'video' && (
+                                        <div className="flex flex-wrap gap-4 justify-center mb-4">
                                             {(analysisType === 'lbw' || analysisType === 'unified') && (
                                                 <>
                                                     <div className="bg-black/60 backdrop-blur-md rounded-xl p-3 border border-white/20 min-w-[120px]">
                                                         <div className="text-emerald-100 text-[10px] font-bold uppercase tracking-wider mb-1">LBW Decision</div>
-                                                        <div className={`text-xl font-black ${lbwDecision === 'OUT' ? 'text-red-400' : lbwDecision === 'NOT OUT' ? 'text-green-400' : 'text-white'}`}>
+                                                        <div className={`text-xl font-black ${lbwDecision?.includes('OUT') && !lbwDecision?.includes('NOT') ? 'text-red-400' : lbwDecision?.includes('NOT OUT') ? 'text-green-400' : 'text-white'}`}>
                                                             {lbwDecision || 'Waiting...'}
                                                         </div>
                                                     </div>
                                                     <div className="bg-black/60 backdrop-blur-md rounded-xl p-3 border border-white/20 min-w-[120px]">
                                                         <div className="text-emerald-100 text-[10px] font-bold uppercase tracking-wider mb-1">Impact</div>
-                                                        <div className={`text-xl font-black ${firstContact === 'BAT' ? 'text-green-400' : firstContact === 'PAD' ? 'text-red-400' : 'text-gray-400'}`}>
+                                                        <div className={`text-xl font-black ${firstContact === 'BAT' ? 'text-green-400' : (firstContact === 'PAD' || firstContact === 'STUMPS') ? 'text-red-400' : 'text-gray-400'}`}>
                                                             {firstContact || '-'}
                                                         </div>
                                                     </div>
@@ -739,12 +811,13 @@ export default function DetectionSource() {
                                 </div>
                             )}
 
+
                             {/* Loading / Empty State */}
                             {isAnalyzing && selectedMethod !== 'video' ? (
                                 <div className="flex flex-col items-center text-emerald-600 w-full px-8">
                                     <Loader2 className="w-12 h-12 animate-spin mb-4" />
                                     <h3 className="text-xl font-bold">Processing...</h3>
-                                    <p className="text-sm opacity-70 mb-6">Running AI Models...</p>
+                                    <p className="text-sm opacity-70 mb-6">{analysisProgress || 'Running AI Models...'}</p>
                                 </div>
                             ) : (
                                 !previewUrl && !liveStreamUrl && !isAnalyzing && (
@@ -768,32 +841,6 @@ export default function DetectionSource() {
                                 )
                             )}
 
-                            {(previewUrl || liveStreamUrl) && !isAnalyzing && !isPitchSetup && (
-                                <div className="flex flex-col items-center gap-4 w-full">
-                                    {!liveStreamUrl && (
-                                        <button
-                                            onClick={startAnalysis}
-                                            className="bg-emerald-600 text-white px-12 py-4 rounded-2xl font-black text-lg shadow-xl shadow-emerald-100 hover:scale-105 active:scale-95 transition-all flex items-center gap-3"
-                                        >
-                                            <Zap className="w-6 h-6 fill-white" />
-                                            <span>START AI ANALYSIS</span>
-                                        </button>
-                                    )}
-                                    
-                                    <button
-                                        onClick={(e) => { 
-                                            e.stopPropagation(); 
-                                            setPreviewUrl(null); 
-                                            setLiveStreamUrl(null);
-                                            setAnalysisResult(null);
-                                            if (fileInputRef.current) fileInputRef.current.value = ''; // Reset memory
-                                        }}
-                                        className="text-gray-400 text-sm hover:text-emerald-600 transition-colors"
-                                    >
-                                        Choose Different File
-                                    </button>
-                                </div>
-                            )}
                         </div>
 
                         {/* Results */}
