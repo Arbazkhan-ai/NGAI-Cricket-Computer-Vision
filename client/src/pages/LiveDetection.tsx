@@ -53,7 +53,7 @@ export default function LiveDetection() {
             if (analysisType === 'lbw' || analysisType === 'unified') {
                 await startLbwLiveDetection(formattedIp, port, showLandmarks, overridePitch !== undefined ? overridePitch : manualPitch);
             } else {
-                await startLiveDetection(formattedIp, port, showLandmarks, manualPitch);
+                await startLiveDetection(formattedIp, port, showLandmarks, overridePitch !== undefined ? overridePitch : manualPitch);
             }
             setStatus('Running');
             setCountdown(3);
@@ -101,8 +101,10 @@ export default function LiveDetection() {
                     setFirstContact(data.contact);
                 }
                 
-                if (data.shot_label) {
+                if (data.shot_label && data.shot_label !== "Waiting...") {
                     setShotType({ label: data.shot_label, conf: data.shot_conf });
+                } else {
+                    setShotType(null);
                 }
                 
                 if (data.score > prevBackendScoreRef.current) {
@@ -121,7 +123,7 @@ export default function LiveDetection() {
             } catch (err) {
                 console.error("Score fetch error", err);
             }
-        }, 500);
+        }, 200);
 
         return () => clearInterval(interval);
     }, [status, gameActive, rules, setScore]);

@@ -103,7 +103,7 @@ def process_video(input_path, output_path, mode="auto", models_dict=None):
         except:
             manual_pitch_pts = []
     pitch_roi = None
-    stump_rect = [300, 400, 500, 700] # Default fallback
+    stump_rect = None
     pad_hit_time = None
     frame_idx = 0
     final_decision = "NOT OUT"
@@ -158,7 +158,7 @@ def process_video(input_path, output_path, mode="auto", models_dict=None):
             if leg_positions:
                 lx = [p[0] for p in leg_positions]
                 ly = [p[1] for p in leg_positions]
-                pad_zone = (min(lx), min(ly), max(lx), max(ly))
+                pad_zone = (max(0, min(lx) - 30), max(0, min(ly) - 20), min(frame.shape[1], max(lx) + 30), min(frame.shape[0], max(ly) + 30))
             else:
                 bx1, by1, bx2, by2 = batsman_data['bbox']
                 pad_zone = (bx1, int(by1 + (by2-by1)*0.5), bx2, by2)

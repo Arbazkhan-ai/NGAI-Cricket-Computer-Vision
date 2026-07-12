@@ -1,7 +1,7 @@
 import numpy as np
 
 class BallTracker:
-    def __init__(self, max_history=30, smoothing_factor=0.7, jump_threshold=100):
+    def __init__(self, max_history=30, smoothing_factor=0.7, jump_threshold=300):
         self.trajectory = []
         self.max_history = max_history
         self.smoothing_factor = smoothing_factor

@@ -16,14 +16,14 @@ class Detector:
         self.stump_model = stump_model if stump_model else YOLO(stump_model_path)
         
     def detect_pitch(self, frame):
-        results = self.pitch_model(frame, verbose=False, conf=0.5)[0]
+        results = self.pitch_model(frame, verbose=False, conf=0.75)[0]
         for box in results.boxes:
             if int(box.cls[0]) == 1: # Pitch
                 return list(map(int, box.xyxy[0]))
         return None
 
-    def detect_stumps(self, frame, conf_threshold=0.25):
-        results = self.stump_model(frame, verbose=False)[0]
+    def detect_stumps(self, frame, conf_threshold=0.60):
+        results = self.stump_model(frame, verbose=False, conf=0.60)[0]
         best_box = None
         highest_conf = 0.0
         for box in results.boxes:
@@ -51,20 +51,22 @@ class Detector:
             x1, y1, x2, y2 = map(int, box.xyxy[0])
             cx, cy = (x1 + x2) // 2, (y1 + y2) // 2
 
-            # Exact pitch filter logic matching process_video.py
-            if manual_pitch and len(manual_pitch) == 4:
-                pts = np.array(manual_pitch, np.int32)
-                if cv2.pointPolygonTest(pts, (float(cx), float(cy)), False) < 0:
-                    continue
-            elif pitch_roi:
-                px1, py1, px2, py2 = pitch_roi
-                if not (px1 <= cx <= px2 and py1 <= cy <= py2):
-                    continue
             # Class mapping: 0: Ball, 1: Bat, 2: Batsman
             key = None
             if cls == 0: key = 'ball'
             elif cls == 1: key = 'bat'
             elif cls == 2: key = 'batsman'
+
+            # Pitch Constraint for Batsman and Bat
+            if key in ['batsman', 'bat']:
+                if manual_pitch and len(manual_pitch) == 4:
+                    pts = np.array(manual_pitch, np.int32)
+                    if cv2.pointPolygonTest(pts, (float(cx), float(cy)), True) < -20:
+                        continue
+                elif pitch_roi:
+                    px1, py1, px2, py2 = pitch_roi
+                    if not ((px1 - 20) <= cx <= (px2 + 20) and (py1 - 20) <= cy <= (py2 + 20)):
+                        continue
 
             if key and conf > highest_conf[key]:
                 highest_conf[key] = conf

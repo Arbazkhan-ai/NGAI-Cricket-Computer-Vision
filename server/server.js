@@ -670,10 +670,10 @@ app.post('/api/stop_live', (req, res) => {
 
 // Start LBW Live Detection Connection
 app.post('/api/start_lbw_live', (req, res) => {
-    const { ip, manual_pitch } = req.body;
+    const { ip, manual_pitch, showLandmarks } = req.body;
     const http = require('http');
     
-    const postData = JSON.stringify({ ip, manual_pitch });
+    const postData = JSON.stringify({ ip, manual_pitch, showLandmarks });
     const options = {
         hostname: '127.0.0.1',
         port: 8081,

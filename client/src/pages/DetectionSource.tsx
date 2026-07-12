@@ -192,7 +192,7 @@ export default function DetectionSource() {
             }
             // Continue loop
             if (!video.paused && !video.ended) {
-                requestAnimationFrame(() => setTimeout(processVideoFrame, 150)); // Approx 6-7 FPS
+                requestAnimationFrame(() => setTimeout(processVideoFrame, 33)); // Approx 30 FPS
             }
         }, 'image/jpeg', 0.6);
     };
@@ -373,17 +373,13 @@ export default function DetectionSource() {
             const canvas = overlayRef.current;
             const video = videoRef.current;
             
-            // For LBW, backend resizes to width=1000. We must match this.
-            // For Shot Detection, it uses original width.
-            const targetWidth = analysisType === 'lbw' ? 1000 : (video.videoWidth || 640);
-            const targetHeight = analysisType === 'lbw' 
-                ? (video.videoWidth > 0 ? (video.videoHeight * (1000 / video.videoWidth)) : 750)
-                : (video.videoHeight || 480);
+            // Use original width for all types so manual points are scaled correctly in the backend
+            const targetWidth = video.videoWidth || 640;
+            const targetHeight = video.videoHeight || 480;
             
-            if (canvas.width !== targetWidth) {
-                canvas.width = targetWidth;
-                canvas.height = targetHeight;
-            }
+            canvas.width = targetWidth;
+            canvas.height = targetHeight;
+            
             const ctx = canvas.getContext('2d');
             if (ctx) {
                 ctx.clearRect(0, 0, canvas.width, canvas.height);
@@ -634,7 +630,7 @@ export default function DetectionSource() {
                                         port: useCustomUrl ? '' : port,
                                         showLandmarks,
                                         analysisType,
-                                        initialSetup: (analysisType === 'lbw' || analysisType === 'unified') ? 'manual' : 'running'
+                                        initialSetup: (analysisType === 'lbw' || analysisType === 'unified' || analysisType === 'shot') ? 'manual' : 'running'
                                     }
                                 })}
                                 className="bg-emerald-500 hover:bg-emerald-600 text-white px-10 py-4 rounded-xl font-bold transition-all shadow-lg shadow-emerald-200 flex items-center gap-3 active:scale-95">
@@ -765,6 +761,13 @@ export default function DetectionSource() {
                                                 onClick={handleOverlayClick}
                                                 className={`absolute inset-0 w-full h-full ${isPitchSetup ? 'z-10 pointer-events-auto cursor-crosshair' : 'pointer-events-none'}`}
                                             />
+                                        )}
+                                        {isAnalyzing && !liveStreamUrl && (
+                                            <div className="absolute inset-0 bg-black/70 flex flex-col items-center justify-center z-20 backdrop-blur-sm">
+                                                <Loader2 className="w-12 h-12 animate-spin text-emerald-500 mb-4" />
+                                                <h3 className="text-xl font-bold text-white">Processing Video...</h3>
+                                                <p className="text-sm text-emerald-200 mt-2 text-center max-w-xs">{analysisProgress || 'Initializing AI Models...'}</p>
+                                            </div>
                                         )}
                                         <canvas ref={canvasRef} className="hidden" />
                                     </div>

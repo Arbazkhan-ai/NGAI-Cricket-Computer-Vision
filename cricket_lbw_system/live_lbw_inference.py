@@ -255,7 +255,7 @@ except Exception as e:
 
 SEQ_LEN = 30
 CONF_THRESHOLD = 0.70
-IGNORE_LABELS  = {"Batsman"}
+IGNORE_LABELS  = {"Batsman", "Pose"}
 
 # Camera State
 camera = None
@@ -265,7 +265,7 @@ show_landmarks_flag = False
 
 # LBW Tracking State
 pitch_roi = None
-stump_rect = [300, 400, 500, 700]
+stump_rect = None
 pad_hit_time = None
 manual_pitch_pts = []
 session_log = []
@@ -290,7 +290,7 @@ def connect_camera():
     
     # Reset tracking state
     pitch_roi = None
-    stump_rect = [300, 400, 500, 700]
+    stump_rect = None
     pad_hit_time = None
     session_log = []
     last_logged_pad_hit_time = None
@@ -436,7 +436,19 @@ def generate_frames():
             continue
         
         # Resize frame for LBW
+        orig_h, orig_w = frame.shape[:2]
         frame = resize_frame(frame)
+        
+        target_width = 1000
+        scaled_manual_pitch = []
+        if orig_w > target_width:
+            target_height = int(orig_h * (target_width / orig_w))
+            scale_x = target_width / orig_w
+            scale_y = target_height / orig_h
+            if manual_pitch_pts:
+                scaled_manual_pitch = [[p[0]*scale_x, p[1]*scale_y] for p in manual_pitch_pts]
+        else:
+            scaled_manual_pitch = list(manual_pitch_pts) if manual_pitch_pts else []
         
         # FPS Calculation
         curr_time = time.time()
@@ -444,28 +456,22 @@ def generate_frames():
         prev_time = curr_time
 
         # 1. Detect Pitch (Auto) & Stumps (Auto)
-        if not manual_pitch_pts:
-            if current_frame_idx % 15 == 0 or not pitch_roi:
+        if not scaled_manual_pitch:
+            if current_frame_idx % 30 == 0 or not pitch_roi:
                 new_pitch_roi = detector.detect_pitch(frame)
                 if new_pitch_roi:
                     pitch_roi = new_pitch_roi
-            
-            if current_frame_idx % 15 == 0 or stump_rect == [300, 400, 500, 700]:
+                    
+            if current_frame_idx % 30 == 0 or not stump_rect:
                 new_stump_rect = detector.detect_stumps(frame)
                 if new_stump_rect:
                     stump_rect = new_stump_rect
 
-        # 2. Detect Objects (Strict Pitch Enforcement)
-        if not pitch_roi and not manual_pitch_pts:
-            objects = {}
-            ball_data = None
-            batsman_data = None
-            bat_data = None
-        else:
-            objects = detector.detect_objects(frame, pitch_roi=pitch_roi, manual_pitch=manual_pitch_pts)
-            ball_data = objects.get('ball')
-            batsman_data = objects.get('batsman')
-            bat_data = objects.get('bat')
+        # 2. Detect Objects
+        objects = detector.detect_objects(frame, pitch_roi=pitch_roi, manual_pitch=scaled_manual_pitch)
+        ball_data = objects.get('ball')
+        batsman_data = objects.get('batsman')
+        bat_data = objects.get('bat')
         
         ball_center = ball_data['center'] if ball_data else None
 
@@ -482,44 +488,46 @@ def generate_frames():
             if leg_positions:
                 lx = [p[0] for p in leg_positions]
                 ly = [p[1] for p in leg_positions]
-                pad_zone = (min(lx), min(ly), max(lx), max(ly))
+                pad_zone = (max(0, min(lx) - 30), max(0, min(ly) - 20), min(frame.shape[1], max(lx) + 30), min(frame.shape[0], max(ly) + 30))
             else:
                 bx1, by1, bx2, by2 = batsman_data['bbox']
                 pad_zone = (bx1, int(by1 + (by2-by1)*0.5), bx2, by2)
                 
-            # Shot Detection Logic
-            if pose_results and pose_results.pose_landmarks and shot_model:
-                bx1, by1, bx2, by2 = pose_offset if pose_offset else (0, 0, frame.shape[1], frame.shape[0])
-                cw, ch = bx2-bx1, by2-by1
-                h_full, w_full = frame.shape[:2]
-                feat = []
-                for p in pose_results.pose_landmarks.landmark:
-                    abs_x = p.x * cw + bx1
-                    abs_y = p.y * ch + by1
-                    feat.extend([abs_x / w_full, abs_y / h_full, p.z, p.visibility])
-                    
-                pose_buffer.append(feat)
-                if len(pose_buffer) > SEQ_LEN: pose_buffer.pop(0)
+        # Shot Detection Logic
+        if pose_results and pose_results.pose_landmarks and shot_model:
+            bx1, by1, bx2, by2 = pose_offset if pose_offset else (0, 0, frame.shape[1], frame.shape[0])
+            cw, ch = bx2-bx1, by2-by1
+            h_full, w_full = frame.shape[:2]
+            feat = []
+            for p in pose_results.pose_landmarks.landmark:
+                abs_x = p.x * cw + bx1
+                abs_y = p.y * ch + by1
+                feat.extend([abs_x / w_full, abs_y / h_full, p.z, p.visibility])
                 
-                if len(pose_buffer) == SEQ_LEN:
-                    X = np.array(pose_buffer, dtype=np.float32)
-                    X_scaled = scaler.transform(X).reshape(1, SEQ_LEN, -1).astype(np.float32)
-                    ort_inputs = {shot_model.get_inputs()[0].name: X_scaled}
-                    preds = shot_model.run(None, ort_inputs)[0]
-                    idx = np.argmax(preds[0])
-                    if shot_classes[idx] not in IGNORE_LABELS and preds[0][idx] >= CONF_THRESHOLD:
-                        latched_shot_label = shot_classes[idx]
-                        latched_shot_conf = float(preds[0][idx])
-                        shot_delay_countdown = 150
-                        shot_display_countdown = 150
-                        
-                        session_log.append({
-                            "time": time.strftime("%I:%M:%S %p"),
-                            "type": "shot",
-                            "label": latched_shot_label,
-                            "conf": latched_shot_conf
-                        })
-                        pose_buffer = [] # Reset to avoid spam
+            pose_buffer.append(feat)
+            if len(pose_buffer) > SEQ_LEN: pose_buffer.pop(0)
+            
+            if len(pose_buffer) == SEQ_LEN:
+                X = np.array(pose_buffer, dtype=np.float32)
+                X_scaled = scaler.transform(X).reshape(1, SEQ_LEN, -1).astype(np.float32)
+                ort_inputs = {shot_model.get_inputs()[0].name: X_scaled}
+                preds = shot_model.run(None, ort_inputs)[0]
+                idx = np.argmax(preds[0])
+                if shot_classes[idx] not in IGNORE_LABELS and preds[0][idx] >= CONF_THRESHOLD:
+                    latched_shot_label = shot_classes[idx]
+                    latched_shot_conf = float(preds[0][idx])
+                    shot_delay_countdown = 0
+                    shot_display_countdown = 120 # 4 seconds
+                    
+                    session_log.append({
+                        "time": time.strftime("%I:%M:%S %p"),
+                        "type": "shot",
+                        "label": latched_shot_label,
+                        "conf": latched_shot_conf
+                    })
+                    pose_buffer.clear()
+                else:
+                    pose_buffer = pose_buffer[1:]
 
         # 4. Track Ball
         if ball_center is not None:
@@ -603,6 +611,9 @@ def generate_frames():
                 shot_delay_countdown -= 1
             elif shot_display_countdown > 0:
                 shot_display_countdown -= 1
+                if shot_display_countdown == 0:
+                    latched_shot_label = None
+                    latched_shot_conf = 0.0
         
         vis_impact_point = None if is_delay_active else lbw_logic.impact_point
         vis_first_contact = None if is_delay_active else lbw_logic.first_contact
@@ -628,11 +639,11 @@ def generate_frames():
             fps,
             pitch_roi,
             stump_rect,
-            manual_pitch_pts,
+            scaled_manual_pitch,
             bat_zone=bat_zone,
             pad_zone=pad_zone,
             first_contact=vis_first_contact,
-            show_setup=False,
+            show_setup=show_landmarks_flag,
             show_detections=show_landmarks_flag,
             speed=speed,
             swing=swing,

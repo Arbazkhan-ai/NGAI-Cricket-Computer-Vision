@@ -20,9 +20,10 @@ def draw_analytics(frame, ball_data, objects, trajectory, predicted_path, impact
             cv2.putText(frame, "AUTO PITCH", (px1, py1 - 5), cv2.FONT_HERSHEY_SIMPLEX, 0.4, (255, 255, 255), 1)
 
         # Draw Stumps Region
-        sx_min, sy_min, sx_max, sy_max = stump_rect
-        cv2.rectangle(frame, (sx_min, sy_min), (sx_max, sy_max), (0, 255, 255), 2)
-        cv2.putText(frame, "STUMPS", (sx_min, sy_min - 5), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 255), 1)
+        if stump_rect:
+            sx_min, sy_min, sx_max, sy_max = stump_rect
+            cv2.rectangle(frame, (sx_min, sy_min), (sx_max, sy_max), (0, 255, 255), 2)
+            cv2.putText(frame, "STUMPS", (sx_min, sy_min - 5), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 255), 1)
     
     # 3. Draw Heat Zones
     if bat_zone:

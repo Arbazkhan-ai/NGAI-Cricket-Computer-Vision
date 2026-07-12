@@ -28,7 +28,7 @@ LABEL_MAP_PATH  = os.path.join(MODELS_DIR, "label_map_v2.json")
 SEQ_LEN = 30
 CONF_THRESHOLD = 0.70
 IGNORE_LABELS  = {"Batsman"}
-SHOT_DISPLAY_FRAMES = 90
+SHOT_DISPLAY_FRAMES = 15
 MAX_MISSING_FRAMES = 10
 
 
@@ -76,6 +76,8 @@ def process_video(input_path, output_path, mode="mediapipe", models_dict=None):
         scaler = models_dict.get('scaler')
         classes = models_dict.get('classes')
         pose = models_dict.get('pose_detector')
+        if hasattr(pose, 'pose'):
+            pose = pose.pose
     else:
         try:
             import onnxruntime as ort
@@ -144,11 +146,11 @@ def process_video(input_path, output_path, mode="mediapipe", models_dict=None):
         
         # Draw pitch boxes
         for pbox in pitch_boxes:
-            if len(pbox) == 4:
-                cv2.rectangle(frame, (int(pbox[0]), int(pbox[1])), (int(pbox[2]), int(pbox[3])), (255, 255, 0), 2)
-            elif len(pbox) == 4 and isinstance(pbox[0], (list, tuple)): # 4 points
+            if len(pbox) == 4 and isinstance(pbox[0], (list, tuple)): # 4 points
                 pts = np.array(pbox, np.int32).reshape((-1, 1, 2))
                 cv2.polylines(frame, [pts], isClosed=True, color=(255, 255, 0), thickness=2)
+            elif len(pbox) == 4:
+                cv2.rectangle(frame, (int(pbox[0]), int(pbox[1])), (int(pbox[2]), int(pbox[3])), (255, 255, 0), 2)
 
         # Strict Pitch Validation
         pitch_valid = len(pitch_boxes) > 0
@@ -184,7 +186,11 @@ def process_video(input_path, output_path, mode="mediapipe", models_dict=None):
                 cx, cy = (bman[0]+bman[2])//2, (bman[1]+bman[3])//2
                 on_pitch = False
                 for pbox in pitch_boxes:
-                    if pbox[0] <= cx <= pbox[2] and pbox[1] <= cy <= pbox[3]:
+                    if isinstance(pbox[0], (list, tuple)):
+                        px1, py1, px2, py2 = min(p[0] for p in pbox), min(p[1] for p in pbox), max(p[0] for p in pbox), max(p[1] for p in pbox)
+                    else:
+                        px1, py1, px2, py2 = pbox
+                    if px1 <= cx <= px2 and py1 <= cy <= py2:
                         on_pitch = True; break
                 
                 if not on_pitch: continue # Skip if not on pitch
@@ -242,6 +248,7 @@ def process_video(input_path, output_path, mode="mediapipe", models_dict=None):
                         idx = np.argmax(preds[0])
                         if classes[idx] not in IGNORE_LABELS and preds[0][idx] >= CONF_THRESHOLD:
                             current_shot_label, current_shot_conf = classes[idx], float(preds[0][idx])
+                            pose_buffer.clear()
 
         # 5. Ball Tracking (Only if inside Pitch)
         if ball_box:
@@ -251,7 +258,11 @@ def process_video(input_path, output_path, mode="mediapipe", models_dict=None):
             # Constraint: Must be near pitch
             near_pitch = False
             for pbox in pitch_boxes:
-                if (pbox[0]-100) <= cx <= (pbox[2]+100) and (pbox[1]-100) <= cy <= (pbox[3]+100):
+                if isinstance(pbox[0], (list, tuple)):
+                    px1, py1, px2, py2 = min(p[0] for p in pbox), min(p[1] for p in pbox), max(p[0] for p in pbox), max(p[1] for p in pbox)
+                else:
+                    px1, py1, px2, py2 = pbox
+                if (px1-100) <= cx <= (px2+100) and (py1-100) <= cy <= (py2+100):
                     near_pitch = True; break
             
             if near_pitch:

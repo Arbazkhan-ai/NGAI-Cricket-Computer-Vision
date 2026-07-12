@@ -165,8 +165,8 @@ LABEL_MAP_PATH  = os.path.join(MODELS_DIR, "label_map_v2.json")
 # Config
 SEQ_LEN = 30
 CONF_THRESHOLD = 0.70
-IGNORE_LABELS  = {"Batsman"}
-SHOT_DISPLAY_FRAMES = 600
+IGNORE_LABELS  = {"Batsman", "Pose"}
+SHOT_DISPLAY_FRAMES = 120
 MAX_MISSING_FRAMES = 30
 
 # Global State (Models Loaded on Startup)
@@ -378,6 +378,20 @@ def generate_frames():
         # Flip frame horizontally to fix mirroring (Left -> Right, Right -> Left)
         # frame = cv2.flip(frame, 1)
 
+        # Scale down frame to speed up AI inference massively
+        target_width = 1000
+        orig_h, orig_w = frame.shape[:2]
+        scaled_manual_pitch = []
+        if orig_w > target_width:
+            target_height = int(orig_h * (target_width / orig_w))
+            frame = cv2.resize(frame, (target_width, target_height))
+            scale_x = target_width / orig_w
+            scale_y = target_height / orig_h
+            if manual_pitch_pts:
+                scaled_manual_pitch = [[p[0]*scale_x, p[1]*scale_y] for p in manual_pitch_pts]
+        else:
+            scaled_manual_pitch = list(manual_pitch_pts) if manual_pitch_pts else []
+
         h, w = frame.shape[:2]
         
         # Keep original frame for AI processing
@@ -385,14 +399,14 @@ def generate_frames():
         
         # AI Inference or Manual Pitch
         pitch_boxes = []
-        if manual_pitch_pts and len(manual_pitch_pts) == 4:
-            xs = [p[0] for p in manual_pitch_pts]
-            ys = [p[1] for p in manual_pitch_pts]
+        if scaled_manual_pitch and len(scaled_manual_pitch) == 4:
+            xs = [p[0] for p in scaled_manual_pitch]
+            ys = [p[1] for p in scaled_manual_pitch]
             px1, py1, px2, py2 = min(xs), min(ys), max(xs), max(ys)
             pitch_boxes.append((px1, py1, px2, py2))
         else:
-            if current_frame_idx % 15 == 0 or not pitch_boxes_cache:
-                results_pitch = pitch_model.predict(frame, conf=0.5, verbose=False)
+            if current_frame_idx % 30 == 0 or not pitch_boxes_cache:
+                results_pitch = pitch_model.predict(frame, conf=0.75, verbose=False)
                 best_pitch = None
                 best_conf = 0
                 for res in results_pitch:
@@ -401,21 +415,19 @@ def generate_frames():
                             conf = float(box.conf[0])
                             if conf > best_conf:
                                 best_conf = conf
-                                px1, py1, px2, py2 = box.xyxy[0].tolist()
-                                best_pitch = (px1, py1, px2, py2)
+                                best_pitch = tuple(map(int, box.xyxy[0].tolist()))
                 if best_pitch:
                     pitch_boxes_cache = [best_pitch]
             pitch_boxes = pitch_boxes_cache
 
         stump_boxes = []
         if current_frame_idx % 15 == 0 or not stump_boxes_cache:
-            results_stumps = stump_model.predict(frame, conf=0.25, verbose=False)
+            results_stumps = stump_model.predict(frame, conf=0.60, verbose=False)
             cache_stumps = []
             for res in results_stumps:
                 for box in res.boxes:
                     if int(box.cls[0]) == 0:
-                        sx1, sy1, sx2, sy2 = box.xyxy[0].tolist()
-                        cache_stumps.append((sx1, sy1, sx2, sy2))
+                        cache_stumps.append(tuple(map(int, box.xyxy[0].tolist())))
             if cache_stumps:
                 stump_boxes_cache = cache_stumps
         stump_boxes = stump_boxes_cache
@@ -443,10 +455,10 @@ def generate_frames():
             for bman in all_batsmen:
                 cx, cy = (bman[0]+bman[2])//2, (bman[1]+bman[3])//2
                 # Exact pitch filter logic matching process_video.py
-                if manual_pitch_pts and len(manual_pitch_pts) == 4:
+                if scaled_manual_pitch and len(scaled_manual_pitch) == 4:
                     import numpy as np
                     import cv2
-                    pts = np.array(manual_pitch_pts, np.int32)
+                    pts = np.array(scaled_manual_pitch, np.int32)
                     on_pitch = cv2.pointPolygonTest(pts, (float(cx), float(cy)), False) >= 0
                 elif pitch_boxes:
                     on_pitch = any(px1 <= cx <= px2 and py1 <= cy <= py2 for (px1, py1, px2, py2) in pitch_boxes)
@@ -481,44 +493,30 @@ def generate_frames():
                     pose_buffer.append(feat)
                     if len(pose_buffer) > SEQ_LEN: pose_buffer.pop(0)
                     
-                    if len(pose_buffer) >= 5 and shot_model:
-                        temp_buffer = pose_buffer.copy()
-                        while len(temp_buffer) < SEQ_LEN:
-                            temp_buffer.insert(0, temp_buffer[0]) # Pad at the beginning
-                        X = np.array(temp_buffer, dtype=np.float32)
+                    if len(pose_buffer) == SEQ_LEN and shot_model:
+                        X = np.array(pose_buffer, dtype=np.float32)
                         X_scaled = scaler.transform(X).reshape(1, SEQ_LEN, -1).astype(np.float32)
                         ort_inputs = {shot_model.get_inputs()[0].name: X_scaled}
                         preds = shot_model.run(None, ort_inputs)[0]
                         idx = np.argmax(preds[0])
-                        if classes[idx] not in IGNORE_LABELS and preds[0][idx] >= CONF_THRESHOLD:
+                        if classes[idx] not in IGNORE_LABELS and preds[0][idx] >= 0.70:
                             current_shot_label, current_shot_conf = classes[idx], float(preds[0][idx])
+                            latched_shot_label, latched_shot_conf = current_shot_label, current_shot_conf
+                            shot_display_countdown = SHOT_DISPLAY_FRAMES
+                            pose_buffer.clear()
+                        else:
+                            pose_buffer = pose_buffer[1:]
 
         if current_ball_box:
             x1, y1, x2, y2, cls_name, conf = current_ball_box
-            cx, cy = int((x1+x2)/2), int((y1+y2)/2)
             
-            # Strict Pitch Constraint with generous margin
-            if manual_pitch_pts and len(manual_pitch_pts) == 4:
-                pts = np.array(manual_pitch_pts, np.int32)
-                near_pitch = cv2.pointPolygonTest(pts, (float(cx), float(cy)), False) >= -250
-            elif pitch_boxes:
-                near_pitch = any((pbox[0]-250) <= cx <= (pbox[2]+250) and (pbox[1]-250) <= cy <= (pbox[3]+250) for pbox in pitch_boxes)
-            else:
-                near_pitch = False
-            if near_pitch:
-                ball_track.append((cx, cy))
-                frames_without_ball = 0
-                if len(ball_track) == 1:
-                    current_db_id = create_new_detection_sync("Live Stream")
-                    tracked_trajectory = []
-            else:
-                frames_without_ball += 1
-                if frames_without_ball <= MAX_MISSING_FRAMES and len(ball_track) >= 2:
-                    dx = ball_track[-1][0] - ball_track[-2][0]
-                    dy = ball_track[-1][1] - ball_track[-2][1]
-                    ball_track.append((int(ball_track[-1][0] + dx), int(ball_track[-1][1] + dy)))
+            # Add to tracking
+            bcx, bcy = (x1+x2)/2, (y1+y2)/2
+            ball_track.append((int(bcx), int(bcy)))
+            frames_without_ball = 0
         else:
             frames_without_ball += 1
+            # Extrapolate ball if missing for a few frames
             if frames_without_ball <= MAX_MISSING_FRAMES and len(ball_track) >= 2:
                 dx = ball_track[-1][0] - ball_track[-2][0]
                 dy = ball_track[-1][1] - ball_track[-2][1]
@@ -551,28 +549,25 @@ def generate_frames():
                         # NEW HIT! Increment score
                         game_score += 1
                         last_hit_frame = current_frame_idx
-                        if current_shot_label and current_shot_label != "Waiting...":
+                        if latched_shot_label and latched_shot_label != "Waiting...":
                             speed = estimate_speed(ball_track)
                             ball_type = get_ball_type(ball_track, speed)
                             session_log.append({
                                 "time": time.strftime("%I:%M:%S %p"),
                                 "type": "shot",
-                                "label": current_shot_label,
-                                "conf": current_shot_conf,
+                                "label": latched_shot_label,
+                                "conf": latched_shot_conf,
                                 "speed": speed,
                                 "ball_type": ball_type
                             })
                     
                     ball_hit_bat = True
-                if current_shot_label != "Waiting...":
-                    latched_shot_label, latched_shot_conf = current_shot_label, current_shot_conf
-                    shot_display_countdown = SHOT_DISPLAY_FRAMES
 
         # Draw Pitch
-        if manual_pitch_pts and len(manual_pitch_pts) == 4:
-            pts = np.array(manual_pitch_pts, np.int32)
+        if scaled_manual_pitch and len(scaled_manual_pitch) == 4:
+            pts = np.array(scaled_manual_pitch, np.int32)
             cv2.polylines(annotated_frame, [pts], True, (255, 255, 0), 2)
-            cv2.putText(annotated_frame, "MANUAL PITCH", (int(manual_pitch_pts[0][0]), int(manual_pitch_pts[0][1]) - 5), 
+            cv2.putText(annotated_frame, "MANUAL PITCH", (int(scaled_manual_pitch[0][0]), int(scaled_manual_pitch[0][1]) - 5), 
                         cv2.FONT_HERSHEY_SIMPLEX, 0.4, (255, 255, 0), 1)
         else:
             for (px1, py1, px2, py2) in pitch_boxes:
@@ -623,7 +618,9 @@ def generate_frames():
             shot_display_countdown -= 1
             if shot_display_countdown == 0:
                 latched_shot_label = None
-
+                latched_shot_conf = 0.0
+                ball_track = []
+                frames_without_ball = 0
         cv2.rectangle(annotated_frame, (20, 20), (450, 130), (0, 0, 0), -1)
         cv2.putText(annotated_frame, f"TYPE: {ball_type}", (30, 50), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 255), 2)
         cv2.putText(annotated_frame, f"SPEED: {speed} km/h", (30, 80), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 2)

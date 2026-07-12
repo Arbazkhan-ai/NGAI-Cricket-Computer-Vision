@@ -48,15 +48,19 @@ export const analyzeVideo = async (file: File, mode: string = 'mediapipe', onPro
     const reader = response.body?.getReader();
     const decoder = new TextDecoder();
     let finalResult = null;
+    let buffer = '';
 
     while (reader) {
         const { value, done } = await reader.read();
         if (done) break;
 
-        const chunk = decoder.decode(value);
-        const lines = chunk.split('\n');
+        buffer += decoder.decode(value, { stream: true });
+        
+        let newlineIndex;
+        while ((newlineIndex = buffer.indexOf('\n')) !== -1) {
+            const line = buffer.slice(0, newlineIndex).trim();
+            buffer = buffer.slice(newlineIndex + 1);
 
-        for (const line of lines) {
             if (line.startsWith('data: ')) {
                 try {
                     const data = JSON.parse(line.slice(6));
